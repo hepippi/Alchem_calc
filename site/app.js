@@ -19,7 +19,7 @@
   const DEFAULT_PLAN = {
     targets: [], recipes: {}, machines: {}, cauldron: {},
     research: { factory: 0, fuel: 0, fertilizer: 0, alchemy: 0, logistics: 0 },
-    fuel: 'Charcoal', fertilizer: '', byproducts: 'recycle', selfSupply: false, herbOnly: false, herbCore: false,
+    fuel: 'Charcoal', fertilizer: '', byproducts: 'recycle', selfSupply: false, herbOnly: false, herbCore: false, hoPriority: 'space', hoLeaf: 'noCauldron', hoCoin: true,
   };
   const ui = {
     lang: store.get('af.lang', (navigator.language || 'ja').startsWith('ja') ? 'ja' : 'en'),
@@ -139,6 +139,9 @@
     $('#self-supply').checked = !!plan.selfSupply;
     $('#herb-only').checked = !!plan.herbOnly;
     $('#herb-core').checked = !!plan.herbCore;
+    $('#ho-priority').value = plan.hoPriority || 'space';
+    $('#ho-leaf').value = plan.hoLeaf || 'noCauldron';
+    $('#ho-coin').checked = plan.hoCoin !== false;
     $('#herb-core-wrap').hidden = !plan.herbOnly;
     $('#lang-select').innerHTML = D.langs.map(l => `<option value="${l}" ${l === ui.lang ? 'selected' : ''}>${LANG_LABELS[l] || l}</option>`).join('');
   }
@@ -181,17 +184,39 @@
   // ------------------------------------------------------------------ herb-only planner results
   let hoCache = { key: '', res: null };
   function herbOnlyResult() {
-    const herbs = C.herbItems(D).filter(h => plan.herbCore || h !== 'WorldTreeCore');
-    const key = JSON.stringify([plan.targets, plan.research, plan.machines, plan.fertilizer, plan.fuel, herbs]);
-    if (hoCache.key !== key) hoCache = { key, res: C.solveHerbOnly(D, plan, IDX, { herbs }) };
+    const leaf = plan.hoLeaf || 'noCauldron';
+    const herbs = C.herbItems(D).filter(h => (plan.herbCore || h !== 'WorldTreeCore') && (leaf !== 'none' || h !== 'WorldTreeLeaf'));
+    const noCauldron = [...(leaf === 'noCauldron' ? ['WorldTreeLeaf'] : []), ...(plan.hoCoin !== false ? ['CopperCoin'] : [])];
+    const priority = plan.hoPriority || 'space';
+    const key = JSON.stringify([plan.targets, plan.research, plan.machines, plan.fertilizer, plan.fuel, herbs, noCauldron, priority]);
+    if (hoCache.key !== key) hoCache = { key, res: C.solveHerbOnly(D, plan, IDX, { herbs, noCauldron, priority }) };
     return hoCache.res;
+  }
+
+  /** Nutrient points produced by fertilizer targets versus points consumed growing the herbs. */
+  function fertBalance(res) {
+    const eff = res.ctx.fertEff;
+    const made = Object.entries(res.targets).reduce((t2, [id, rate]) => t2 + rate * (D.items[id].nutrient || 0) * eff, 0);
+    if (!made) return '';
+    const net = made - res.nutrient;
+    const ratio = res.nutrient > 0 ? made / res.nutrient : Infinity;
+    return `<div class="stat ${net >= 0 ? 'fert-up' : 'fert-down'}"><div class="label">${esc(t('hoFertBalance'))}</div>
+      <div class="value">×${isFinite(ratio) ? fmt(ratio) : '∞'}<small>${net >= 0 ? '+' : ''}${fmt(net)}pt${esc(t('hoPerMin'))}</small></div>
+      <div class="extra">${esc(t('hoFertBalanceHint', { made: fmt(made), used: fmt(res.nutrient) }))}</div></div>`;
   }
 
   function renderHerbOnlyResults(el) {
     const res = herbOnlyResult();
     if (!res.ok) {
+      let hint = '';
+      if (res.reason === 'unreachable' && plan.hoCoin !== false) {
+        const leaf = plan.hoLeaf || 'noCauldron';
+        const herbs = C.herbItems(D).filter(h => (plan.herbCore || h !== 'WorldTreeCore') && (leaf !== 'none' || h !== 'WorldTreeLeaf'));
+        const r2 = C.solveHerbOnly(D, plan, IDX, { herbs, noCauldron: leaf === 'noCauldron' ? ['WorldTreeLeaf'] : [], priority: plan.hoPriority });
+        if (r2.ok) hint = `<br>${esc(t('hoCoinUnlock'))}`;
+      }
       el.innerHTML = res.reason === 'unreachable'
-        ? `<div class="alert">${esc(t('hoUnreachable', { items: res.missing.map(nm).join(', ') }))}</div>`
+        ? `<div class="alert">${esc(t('hoUnreachable', { items: res.missing.map(nm).join(', ') }))}${hint}</div>`
         : `<div class="alert">${esc(t('hoInfeasible'))}</div>`;
       return;
     }
@@ -206,6 +231,7 @@
       ${stat(t('hoMachines'), machineCount, t('unitMachines'))}
       ${stat(t('hoCauldrons'), cauldronCount, t('unitMachines'), `<div class="extra">${esc(t('hoStacks', { n: Math.ceil(cauldronCount / 4) }))}</div>`)}
       ${stat(t('hoNutrient'), fmt(res.nutrient), t('hoPerMin'))}
+      ${fertBalance(res)}
       ${stat(t('hoHerbs'), fmt(res.herbTotal), t('hoPerMin'))}
       ${stat(t('heatTotal'), fmt(res.heat), t('heatUnit'), res.fuel && res.heat > 0 ? `<div class="extra">${itemIco(res.fuel)}${esc(nm(res.fuel))} ${fmt(res.fuelPerMin)}${esc(t('perMin'))}</div>` : '')}
     </div>`);
@@ -889,6 +915,9 @@
     if (el.id === 'self-supply') { plan.selfSupply = el.checked; update(); return; }
     if (el.id === 'herb-only') { plan.herbOnly = el.checked; update(); return; }
     if (el.id === 'herb-core') { plan.herbCore = el.checked; update(); return; }
+    if (el.id === 'ho-priority') { plan.hoPriority = el.value; update(); return; }
+    if (el.id === 'ho-leaf') { plan.hoLeaf = el.value; update(); return; }
+    if (el.id === 'ho-coin') { plan.hoCoin = el.checked; update(); return; }
     if (el.id === 'hb-metric') { hb.metric = el.value; hb.alt = null; saveHb(); renderHerb(); return; }
     if (el.id === 'hb-two') { hb.allowTwo = el.checked; hb.alt = null; saveHb(); renderHerb(); return; }
     if (el.id === 'cd-mode') { cd.mode = el.value; saveCd(); renderCdRev(); return; }

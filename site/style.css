@@ -396,6 +396,10 @@ table.line select { max-width: 220px; font-size: 12px; padding: 4px 6px; }
 /* ---------- herb-only planner */
 .herb-only-toggle { margin-top: 12px; padding: 8px 10px; border-radius: 10px; background: var(--accent-soft); }
 .herb-only-toggle > span > span { font-weight: 650; color: var(--accent); }
-.herb-only-sub { margin: 6px 0 0 26px; font-size: 13px; }
+.herb-only-opts { margin: 4px 0 0 26px; font-size: 13px; }
+.herb-only-opts .field { margin-top: 8px; }
+.herb-only-opts .check { margin-top: 8px; }
+.stat.fert-up .value { color: var(--teal); }
+.stat.fert-down .value { color: var(--danger); }
 .ho-method { min-width: 220px; }
 .ho-method .inputs { display: inline-flex; gap: 2px 4px; vertical-align: middle; }

@@ -663,13 +663,13 @@
   const CAULDRON_STACK = 4; // cauldrons can be stacked 4 high, so one counts as 1/4 of a floor slot
 
   /** Items that can be made from `herbs` using cauldron mixes and normal recipes. */
-  function herbClosure(data, idx, herbs) {
+  function herbClosure(data, idx, herbs, noCauldron = new Set()) {
     const cidx = cauldronIndex(data);
     const avail = new Set(herbs);
     const combos = {}; // cauldron mix that first made each item reachable (seeds the LP)
     for (let pass = 0; pass < 30; pass++) {
       let changed = false;
-      const routes = herbRoutes(data, { herbs: [...avail].filter(id => cidx.inputById[id]) });
+      const routes = herbRoutes(data, { herbs: [...avail].filter(id => cidx.inputById[id] && !noCauldron.has(id)) });
       for (const [id, b] of Object.entries(routes.best)) {
         if (b.combo && b.combo.length === 3 && !combos[id]) combos[id] = b.combo;
         if (!avail.has(id)) { avail.add(id); changed = true; }
@@ -709,7 +709,8 @@
     const ctx = context(data, plan);
     const cidx = cauldronIndex(data);
     const herbs = (opts.herbs || herbItems(data).filter(h => h !== 'WorldTreeCore'));
-    const avail = herbClosure(data, idx, herbs);
+    const noCauldron = new Set(opts.noCauldron || []); // items never thrown into a cauldron
+    const avail = herbClosure(data, idx, herbs, noCauldron);
     const target = {};
     for (const tg of plan.targets || []) {
       if (!tg.item || !data.items[tg.item]) continue;
@@ -746,7 +747,7 @@
     }
     // cauldron columns are generated on demand
     const cauldronKeys = new Set();
-    const pool = cidx.inputs.filter(x => avail.has(x.id));
+    const pool = cidx.inputs.filter(x => avail.has(x.id) && !noCauldron.has(x.id));
     const poolCost = pool.map(x => x.cost);
     const cauldronCost = {};
     for (const o of cidx.outputs) {
@@ -756,6 +757,7 @@
       cauldronCost[o.id] = { perBatch, c: [perBatch / CAULDRON_STACK, 0, 0, perBatch * tm.heat * ctx.factory] };
     }
     const addCauldron = ids => {
+      if (ids.some(id => noCauldron.has(id))) return false;
       ids = ids.slice().sort();
       const key = ids.join('+');
       if (cauldronKeys.has(key)) return false;
@@ -770,7 +772,7 @@
       return true;
     };
     // seed with the herb-route mixes so every cauldron output starts out reachable
-    const seed = herbRoutes(data, { herbs: herbs.filter(h => cidx.inputById[h]) });
+    const seed = herbRoutes(data, { herbs: herbs.filter(h => cidx.inputById[h] && !noCauldron.has(h)) });
     for (const [id, b] of Object.entries(seed.best)) if (b.combo && b.combo.length === 3 && addCauldron(b.combo)) cols[cols.length - 1].seed = true;
     for (const combo of Object.values(avail.combos)) if (addCauldron(combo)) cols[cols.length - 1].seed = true;
 
@@ -853,9 +855,12 @@
 
     // Two LP stages: (1) floor space, with the lower priorities as tiny tie-breakers;
     // (2) space capped at its optimum, then fertilizer points > herbs > heat.
+    // objective order: 'space' (default) = space > fertilizer > herbs > heat; 'nutrient' = fertilizer > space > herbs > heat
+    const order = opts.priority === 'nutrient' ? [1, 0, 2, 3] : [0, 1, 2, 3];
+    const weights = ws => { const w = [0, 0, 0, 0]; order.forEach((k, i) => { w[k] = ws[i]; }); return w; };
     const STAGES = [
-      { w: [1, 1e-3, 1e-5, 1e-7], caps: [] },
-      { w: [0, 1, 1e-3, 1e-5], caps: [0] },
+      { w: weights([1, 1e-3, 1e-5, 1e-7]), caps: [] },
+      { w: weights([0, 1, 1e-3, 1e-5]), caps: [order[0]] },
     ];
     /** Optimisation with column generation. Returns { x (Map col -> crafts/min), objs } or null. */
     const optimise = () => {
