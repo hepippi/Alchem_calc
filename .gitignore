@@ -1,0 +1,6 @@
+work/
+extractor/bin/
+extractor/obj/
+__pycache__/
+*.pyc
+.claude/

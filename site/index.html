@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Alchemy Factory 計算機</title>
+  <meta name="description" content="Alchemy Factory の生産計算ツール。ゲームファイルから直接抽出した最新データで、必要な設備・原料・燃料を計算します。">
+  <link rel="icon" href="icons/T_UI_Athanor.png">
+  <link rel="stylesheet" href="style.css">
+  <script>
+    try { const t = localStorage.getItem('af.theme'); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+  </script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="icons/T_UI_Athanor.png" alt="" width="36" height="36">
+      <div>
+        <h1 data-t="title">Alchemy Factory 計算機</h1>
+        <p class="sub"><span data-t="gameVersion">ゲームバージョン</span>: <b id="game-version"></b></p>
+      </div>
+    </div>
+    <nav class="tabs" role="tablist">
+      <button role="tab" data-tab="planner" class="tab-btn" data-t="tabPlanner">生産プランナー</button>
+      <button role="tab" data-tab="cauldron" class="tab-btn" data-t="tabCauldron">大釜計算</button>
+      <button role="tab" data-tab="browser" class="tab-btn" data-t="tabBrowser">アイテム図鑑</button>
+    </nav>
+    <div class="top-actions">
+      <label class="sr-only" for="lang-select" data-t="lang">言語</label>
+      <select id="lang-select" class="select-sm"></select>
+      <button id="theme-btn" class="icon-btn" title="Theme" aria-label="Theme">◐</button>
+    </div>
+  </header>
+
+  <main>
+    <section id="tab-planner" class="tab-panel planner">
+      <aside class="side">
+        <div class="card card-targets">
+          <div class="card-head">
+            <h2 data-t="targets">生産目標</h2>
+            <button class="btn-ghost small" id="reset-btn" data-t="reset">リセット</button>
+          </div>
+          <div id="targets"></div>
+          <button class="btn add" id="add-target"><span>＋</span> <span data-t="addTarget">目標を追加</span></button>
+        </div>
+
+        <div class="card card-settings">
+          <h2 data-t="settings">設定</h2>
+          <h3 data-t="research">研究レベル</h3>
+          <div id="research" class="research"></div>
+          <div class="field">
+            <label for="fuel-select" data-t="fuel">燃料</label>
+            <select id="fuel-select"></select>
+          </div>
+          <div class="field">
+            <label for="fert-select" data-t="fertilizer">肥料</label>
+            <select id="fert-select"></select>
+          </div>
+          <div class="field">
+            <label for="byp-select" data-t="byproducts">副産物</label>
+            <select id="byp-select">
+              <option value="recycle" data-t="byproductRecycle">再利用する</option>
+              <option value="show" data-t="byproductShow">再利用しない</option>
+            </select>
+          </div>
+          <label class="check" title="">
+            <input type="checkbox" id="self-supply">
+            <span><span data-t="selfSupply">燃料・肥料もラインで生産する</span><small data-t="selfSupplyHint"></small></span>
+          </label>
+        </div>
+
+        <div class="card card-plans">
+          <h2 data-t="savedPlans">保存済みプラン</h2>
+          <div class="row">
+            <input id="plan-name" type="text" data-tp="planName" placeholder="プラン名">
+            <button class="btn" id="save-plan" data-t="savePlan">プランを保存</button>
+          </div>
+          <div id="plan-list" class="plan-list"></div>
+          <button class="btn wide" id="share-btn" data-t="share">共有リンクをコピー</button>
+        </div>
+      </aside>
+
+      <div class="results" id="results" aria-live="polite"></div>
+    </section>
+
+    <section id="tab-cauldron" class="tab-panel cauldron" hidden>
+      <div class="cd-grid">
+        <div class="card cd-sim">
+          <div class="card-head">
+            <h2 data-t="cdSimTitle">錬成シミュレーター</h2>
+            <button class="btn-ghost small" id="cd-reset" data-t="reset">リセット</button>
+          </div>
+          <p class="hint" data-t="cdSimHint"></p>
+          <div id="cd-slots" class="cd-slots"></div>
+          <div class="cd-target-row">
+            <span class="lbl" data-t="cdTarget">目標アイテム</span>
+            <button class="item-btn" id="cd-target-btn"></button>
+          </div>
+          <div id="cd-result"></div>
+          <p class="hint small" data-t="cdRules"></p>
+        </div>
+        <div class="card cd-rev">
+          <h2 data-t="cdRevTitle">逆引き</h2>
+          <div class="cd-form">
+            <label><span data-t="cdOutput">欲しい出力</span><button class="item-btn" id="cd-out-btn"></button></label>
+            <div class="lbl-row"><span data-t="cdRequire">必ず使う材料</span>
+              <span class="pair"><button class="item-btn" data-cd-req="0"></button><button class="item-btn" data-cd-req="1"></button></span></div>
+            <div class="lbl-row"><span data-t="cdExclude">使わない材料</span>
+              <span class="pair"><button class="item-btn" data-cd-exc="0"></button><button class="item-btn" data-cd-exc="1"></button></span></div>
+            <label><span data-t="cdMode">組合せ</span>
+              <select id="cd-mode">
+                <option value="any" data-t="cdModeAny"></option>
+                <option value="unique" data-t="cdModeUnique"></option>
+                <option value="same" data-t="cdModeSame"></option>
+              </select></label>
+            <label><span data-t="cdSort">並び順</span>
+              <select id="cd-sort">
+                <option value="value" data-t="cdSortValue"></option>
+                <option value="distance" data-t="cdSortDistance"></option>
+              </select></label>
+          </div>
+          <h3 data-t="cdCategories">カテゴリで絞り込み</h3>
+          <div id="cd-tags" class="tag-row"></div>
+          <div id="cd-rev-results"></div>
+        </div>
+      </div>
+      <div class="card cd-herb" id="cd-herb">
+        <h2 data-t="hbTitle">薬草逆引き</h2>
+        <p class="hint" data-t="hbHint"></p>
+        <div class="cd-form hb-form">
+          <label><span data-t="hbTarget">作りたいアイテム</span><button class="item-btn" id="hb-target-btn"></button></label>
+          <label><span data-t="hbMetric">最適化</span>
+            <select id="hb-metric">
+              <option value="standard" data-t="hbMetricStandard"></option>
+              <option value="nutrient" data-t="hbMetricNutrient"></option>
+              <option value="herbs" data-t="hbMetricCount"></option>
+              <option value="heat" data-t="hbMetricHeat"></option>
+              <option value="time" data-t="hbMetricTime"></option>
+            </select></label>
+        </div>
+        <p class="hint small" data-t="hbTieNote" style="margin-top:4px"></p>
+        <label class="check"><input type="checkbox" id="hb-two"><span data-t="hbAllowTwo">2材料の錬成も使う</span></label>
+        <h3 data-t="hbHerbs" style="margin-top:12px">使う薬草</h3>
+        <div id="hb-herbs" class="tag-row hb-herbs"></div>
+        <div id="hb-result"></div>
+        <details class="hb-reach">
+          <summary data-t="hbReachable">薬草から作れるアイテム一覧</summary>
+          <div id="hb-reach" class="table-wrap"></div>
+        </details>
+      </div>
+      <details class="card cd-table-card">
+        <summary data-t="cdTableTitle">錬成表</summary>
+        <div id="cd-table" class="table-wrap"></div>
+      </details>
+    </section>
+
+    <section id="tab-browser" class="tab-panel browser" hidden>
+      <div class="browser-bar">
+        <input id="db-search" type="search" data-tp="searchItems" placeholder="アイテムを検索…">
+        <div id="db-tags" class="tag-row"></div>
+      </div>
+      <div class="browser-body">
+        <div id="db-grid" class="db-grid"></div>
+        <div id="db-detail" class="db-detail card"></div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <details>
+      <summary data-t="notes">計算の前提</summary>
+      <ul>
+        <li data-t="note1"></li>
+        <li data-t="note2"></li>
+        <li data-t="note3"></li>
+        <li data-t="nurseryNote"></li>
+      </ul>
+    </details>
+    <p>Alchemy Factory © D5 Copperhead. Fan-made tool; game data and icons belong to their owners.</p>
+  </footer>
+
+  <div id="picker" class="picker" hidden>
+    <input id="picker-search" type="search" data-tp="searchItems" placeholder="アイテムを検索…" autocomplete="off">
+    <div id="picker-tags" class="tag-row compact"></div>
+    <div id="picker-list" class="picker-list" role="listbox"></div>
+  </div>
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="data/gamedata.js"></script>
+  <script src="i18n.js"></script>
+  <script src="calc.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
