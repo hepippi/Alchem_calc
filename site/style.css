@@ -404,6 +404,26 @@ table.line select { max-width: 220px; font-size: 12px; padding: 4px 6px; }
 .ho-method { min-width: 220px; }
 .ho-method .inputs { display: inline-flex; gap: 2px 4px; vertical-align: middle; }
 
-.ho-force { max-width: 260px; font-size: 12px; padding: 3px 6px; }
 .ho-detail { margin-top: 4px; font-size: 12px; }
 .badge.pin { background: var(--teal-soft); color: var(--teal); }
+
+.ho-item { border: 0; background: none; padding: 2px 4px; margin: -2px -4px; border-radius: 6px; cursor: pointer; color: inherit; font: inherit; }
+.ho-item:hover { background: var(--accent-soft); }
+.ho-item:hover span { text-decoration: underline; text-decoration-style: dotted; }
+.ho-pop {
+  position: fixed; z-index: 55; width: min(480px, calc(100vw - 24px)); max-height: min(560px, calc(100vh - 40px)); overflow: auto;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: 0 12px 40px rgba(0, 0, 0, .25); padding: 10px;
+}
+.ho-pop-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.ho-pop-head img { width: 28px; height: 28px; }
+.ho-pop-head b { flex: 1; }
+.ho-pop-list { display: grid; gap: 6px; }
+.ho-opt { text-align: left; border: 1px solid var(--border); background: var(--surface-2); border-radius: 10px; padding: 7px 10px; cursor: pointer; color: inherit; font: inherit; }
+.ho-opt:hover { border-color: var(--accent); }
+.ho-opt.sel { border-color: var(--teal); background: var(--teal-soft); }
+.ho-opt-label { font-size: 13px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.ho-opt-label .inputs { display: inline-flex; flex-wrap: wrap; gap: 2px 4px; }
+.ho-opt-metrics { font-size: 12px; color: var(--muted); margin-top: 3px; font-variant-numeric: tabular-nums; }
+.ho-opt-metrics b { color: var(--text); }
+.ho-opt-metrics .worse { color: var(--danger); }
+.ho-opt-metrics .better { color: var(--teal); }

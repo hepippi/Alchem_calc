@@ -684,6 +684,11 @@
     return avail;
   }
 
+  /** Items obtainable in herb-only mode (herbs, cauldron mixes of allowed materials, normal recipes). */
+  function herbOnlyMaterials(data, herbs, noCauldron = []) {
+    return herbClosure(data, buildIndex(data), herbs, new Set(noCauldron));
+  }
+
   /** Cauldron output reached by value T (3-material rule), using the precomputed winning windows. */
   function outputForValue(cidx, T) {
     const outs = cidx.outputs;
@@ -1051,7 +1056,7 @@
     solve, buildIndex, defaultRecipe, chosenRecipe, chosenMachine, researchValue, recipeStats, context,
     cauldronIndex, cauldronMix, cauldronSearch, cauldronBest, cauldronRecipe, cauldronTiming,
     herbItems, herbRoutes, herbRoute, herbAlternatives, herbNutrient,
-    lpSolve, solveHerbOnly, herbGrowers,
+    lpSolve, solveHerbOnly, herbGrowers, herbOnlyMaterials,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.AFCalc = api;

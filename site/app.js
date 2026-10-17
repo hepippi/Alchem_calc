@@ -182,15 +182,21 @@
   const pill = (item, rate, sub = '', action = '') => `<div class="pill">${itemIco(item)}<div class="meta"><span>${esc(nm(item))}</span><b>${fmt(rate)}<small class="muted"> ${t('perMin')}</small></b>${sub ? `<small>${sub}</small>` : ''}</div>${action}</div>`;
 
   // ------------------------------------------------------------------ herb-only planner results
+  /** Solver options derived from the planner's herb-only settings. */
+  function hoOptions(force) {
+    const leaf = plan.hoLeaf || 'noCauldron';
+    return {
+      herbs: C.herbItems(D).filter(h => (plan.herbCore || h !== 'WorldTreeCore') && (leaf !== 'none' || h !== 'WorldTreeLeaf')),
+      noCauldron: [...(leaf === 'noCauldron' ? ['WorldTreeLeaf'] : []), ...(plan.hoCoin !== false ? ['CopperCoin'] : [])],
+      priority: plan.hoPriority || 'space',
+      force: force || plan.hoForce || {},
+    };
+  }
   let hoCache = { key: '', res: null };
   function herbOnlyResult() {
-    const leaf = plan.hoLeaf || 'noCauldron';
-    const herbs = C.herbItems(D).filter(h => (plan.herbCore || h !== 'WorldTreeCore') && (leaf !== 'none' || h !== 'WorldTreeLeaf'));
-    const noCauldron = [...(leaf === 'noCauldron' ? ['WorldTreeLeaf'] : []), ...(plan.hoCoin !== false ? ['CopperCoin'] : [])];
-    const priority = plan.hoPriority || 'space';
-    const force = plan.hoForce || {};
-    const key = JSON.stringify([plan.targets, plan.research, plan.machines, plan.fertilizer, plan.fuel, herbs, noCauldron, priority, force]);
-    if (hoCache.key !== key) hoCache = { key, res: C.solveHerbOnly(D, plan, IDX, { herbs, noCauldron, priority, force }) };
+    const o = hoOptions();
+    const key = JSON.stringify([plan.targets, plan.research, plan.machines, plan.fertilizer, plan.fuel, o]);
+    if (hoCache.key !== key) hoCache = { key, res: C.solveHerbOnly(D, plan, IDX, o) };
     return hoCache.res;
   }
 
@@ -204,6 +210,110 @@
     return `<div class="stat ${net >= 0 ? 'fert-up' : 'fert-down'}"><div class="label">${esc(t('hoFertBalance'))}</div>
       <div class="value">×${isFinite(ratio) ? fmt(ratio) : '∞'}<small>${net >= 0 ? '+' : ''}${fmt(net)}pt${esc(t('hoPerMin'))}</small></div>
       <div class="extra">${esc(t('hoFertBalanceHint', { made: fmt(made), used: fmt(res.nutrient) }))}</div></div>`;
+  }
+
+  // ---- method chooser popover
+  let hoPop = null; // { item, options, results, token }
+  const comboKey = ids => 'cauldron:' + ids.slice().sort().join('+');
+  /** Candidate production methods for an item in herb-only mode. */
+  function hoCandidates(item, step) {
+    const o = hoOptions();
+    const opts = [{ value: '', kind: 'auto' }];
+    if (isCdOutput(item)) {
+      opts.push({ value: 'cauldron', kind: 'cauldron-any' });
+      const avail = C.herbOnlyMaterials(D, o.herbs, o.noCauldron);
+      const blocked = Object.keys(CI.inputById).filter(id => !avail.has(id) || o.noCauldron.includes(id));
+      // items made (directly or indirectly) from this one would loop back: never offer them as materials
+      const res = herbOnlyResult();
+      const consumers = {};
+      for (const st of res.ok ? res.steps : []) for (const i of st.inputs) (consumers[i.item] = consumers[i.item] || new Set()).add(st.item);
+      const down = new Set();
+      const stack = [item];
+      while (stack.length) for (const c of consumers[stack.pop()] || []) if (!down.has(c)) { down.add(c); stack.push(c); }
+      blocked.push(...down);
+      const combos = [];
+      if (step && step.method === 'cauldron') combos.push(step.combo);
+      const saved = plan.cauldron && plan.cauldron[item];
+      if (saved && C.cauldronRecipe(D, item, saved)) combos.push(saved);
+      for (const sort of ['value', 'distance']) {
+        for (const x of C.cauldronSearch(D, item, { mode: 'any', exclude: [...blocked, item], sort, limit: 4 }).list) combos.push(x.inputs);
+      }
+      const seen = new Set();
+      for (const c of combos) {
+        const k = comboKey(c);
+        if (seen.has(k) || seen.size >= 6) continue;
+        seen.add(k);
+        opts.push({ value: k, kind: 'cauldron', combo: c });
+      }
+    }
+    for (const r of IDX.byMain[item] || []) {
+      if (r.type === 'Cauldron' || r.type === 'Plant') continue;
+      opts.push({ value: 'recipe:' + r.id, kind: 'recipe', recipe: r });
+    }
+    return opts;
+  }
+  function openHoPop(item, anchor) {
+    const res = herbOnlyResult();
+    if (!res.ok) return;
+    const step = res.steps.find(x => x.item === item);
+    const current = (plan.hoForce || {})[item] || '';
+    hoPop = { item, step, current, options: hoCandidates(item, step), results: {}, token: {} };
+    const pop = $('#ho-pop');
+    pop.hidden = false;
+    renderHoPop();
+    const r = anchor.getBoundingClientRect();
+    const w = pop.offsetWidth, h = pop.offsetHeight;
+    pop.style.left = Math.max(12, Math.min(r.left, innerWidth - w - 12)) + 'px';
+    pop.style.top = (r.bottom + 6 + h > innerHeight ? Math.max(12, Math.min(r.top - h - 6, innerHeight - h - 12)) : r.bottom + 6) + 'px';
+    // evaluate every option in the background, one per tick so the page stays responsive
+    const token = hoPop.token;
+    const queue = hoPop.options.slice();
+    const step2 = () => {
+      if (!hoPop || hoPop.token !== token || !queue.length) return;
+      const opt = queue.shift();
+      const force = { ...(plan.hoForce || {}) };
+      if (opt.value) force[item] = opt.value; else delete force[item];
+      hoPop.results[opt.value] = C.solveHerbOnly(D, plan, IDX, hoOptions(force));
+      renderHoPop();
+      setTimeout(step2, 0);
+    };
+    setTimeout(step2, 30);
+  }
+  function closeHoPop() { hoPop = null; $('#ho-pop').hidden = true; }
+  function renderHoPop() {
+    if (!hoPop) return;
+    const base = herbOnlyResult();
+    const batches = r => r.steps.filter(x => x.method === 'cauldron').reduce((n, x) => n + x.crafts, 0);
+    const delta = (a, b, digits) => {
+      const d = a - b;
+      if (Math.abs(d) < 1e-9 * Math.max(1, Math.abs(b))) return '';
+      return ` <span class="${d > 0 ? 'worse' : 'better'}">(${d > 0 ? '+' : ''}${fmt(d)})</span>`;
+    };
+    const metrics = r => {
+      if (!r) return `<span class="muted">${esc(t('hoCalculating'))}</span>`;
+      if (!r.ok) return `<span class="worse">${esc(t('hoNotPossible'))}</span>`;
+      return `${esc(t('hoSpace'))} <b>${fmt(r.space)}</b>${delta(r.space, base.space)} · ${esc(t('hoNutrient'))} <b>${fmt(r.nutrient)}</b>${delta(r.nutrient, base.nutrient)}`
+        + ` · ${esc(t('hoBatches'))} <b>${fmt(batches(r))}</b>${delta(batches(r), batches(base))}`;
+    };
+    const label = o => {
+      if (o.kind === 'auto') return `<b>${esc(t('hoAuto'))}</b>`;
+      if (o.kind === 'cauldron-any') return `<span class="badge">${esc(t('hoMethodCauldron'))}</span> ${esc(t('hoAnyMix'))}`;
+      if (o.kind === 'cauldron') return `<span class="badge">${esc(t('hoMethodCauldron'))}</span> <span class="inputs">${o.combo.map(id => `<span class="chip">${itemIco(id)}<span>${esc(nm(id))}</span></span>`).join('<span class="muted">+</span>')}</span>`;
+      return `<span class="badge teal">${esc(t('hoMethodRecipe'))}</span> ${esc(recipeLabel(o.recipe))}`;
+    };
+    const s = hoPop.step;
+    const nowKey = s ? (s.method === 'cauldron' ? comboKey(s.combo) : 'recipe:' + s.recipe) : '';
+    $('#ho-pop').innerHTML = `
+      <div class="ho-pop-head">${itemIco(hoPop.item)}<b>${esc(t('hoMethodsFor', { name: nm(hoPop.item) }))}</b>
+        <button class="btn-ghost" data-ho-close="1" aria-label="close">✕</button></div>
+      <div class="ho-pop-list">${hoPop.options.map(o => {
+        const isSel = o.value === hoPop.current;
+        const inUse = o.value === nowKey || (o.kind === 'cauldron-any' && s && s.method === 'cauldron' && hoPop.current === 'cauldron');
+        return `<button class="ho-opt ${isSel ? 'sel' : ''}" data-ho-set="${esc(o.value)}">
+          <div class="ho-opt-label">${label(o)}${isSel ? ` <span class="badge pin">${esc(t('hoSelected'))}</span>` : ''}${o.value === nowKey ? ` <span class="badge teal">${esc(t('hoInUse'))}</span>` : ''}</div>
+          <div class="ho-opt-metrics">${metrics(hoPop.results[o.value])}</div></button>`;
+      }).join('')}</div>
+      <p class="hint small">${esc(t('hoPopHint'))}</p>`;
   }
 
   function renderHerbOnlyResults(el) {
@@ -242,32 +352,7 @@
     const detail = s => s.method === 'cauldron'
       ? `<span class="badge">${esc(t('hoMethodCauldron'))}</span> <span class="inputs">${s.combo.map(id => `<span class="chip">${itemIco(id)}<span class="muted">${esc(nm(id))}</span></span>`).join('<span class="muted">+</span>')}</span>`
       : `<span class="badge teal">${esc(t('hoMethodRecipe'))}</span> ${esc(recipeLabel(IDX.recipeById[s.recipe]))}`;
-    const comboKey = ids => 'cauldron:' + ids.slice().sort().join('+');
-    const method = s => {
-      const cur = (plan.hoForce || {})[s.item] || '';
-      const opts = [['', t('hoAuto')]];
-      if (isCdOutput(s.item)) {
-        opts.push(['cauldron', t('hoForceCauldron')]);
-        const combos = [];
-        if (s.method === 'cauldron') combos.push(s.combo);
-        const saved = plan.cauldron && plan.cauldron[s.item];
-        if (saved && C.cauldronRecipe(D, s.item, saved)) combos.push(saved);
-        if (cur.startsWith('cauldron:') && cur !== 'cauldron') combos.push(cur.slice(9).split('+'));
-        const seen = new Set();
-        for (const c of combos) {
-          const k = comboKey(c);
-          if (seen.has(k)) continue;
-          seen.add(k);
-          opts.push([k, `${t('hoMethodCauldron')}: ${c.map(nm).join(' + ')}`]);
-        }
-      }
-      for (const r of IDX.byMain[s.item] || []) {
-        if (r.type === 'Cauldron' || r.type === 'Plant') continue;
-        opts.push(['recipe:' + r.id, `${t('hoMethodRecipe')}: ${recipeLabel(r)}`]);
-      }
-      const sel = `<select class="ho-force" data-ho-force="${s.item}">${opts.map(([v, l]) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
-      return `${sel}${s.forced ? ` <span class="badge pin">${esc(t('hoForced'))}</span>` : ''}<div class="ho-detail">${detail(s)}</div>`;
-    };
+    const method = s => `${s.forced ? `<span class="badge pin">${esc(t('hoForced'))}</span> ` : ''}${detail(s)}`;
     const machine = s => s.method === 'cauldron'
       ? `<span class="it sm">${ico(D.machines.Cauldron && D.machines.Cauldron.icon)}<span>${esc(mn('Cauldron'))}</span></span>`
       : machineCell(s);
@@ -275,7 +360,7 @@
       <thead><tr><th>${esc(t('colItem'))}</th><th class="num">${esc(t('colRate'))}</th><th>${esc(t('colRecipe'))}</th><th>${esc(t('colMachine'))}</th>
       <th class="num">${esc(t('colCount'))}</th><th>${esc(t('colInputs'))}</th><th class="num">${esc(t('colHeat'))}</th></tr></thead>
       <tbody>${res.steps.map(s => `<tr class="${isTarget(s.item) ? 'target-row' : ''}">
-        <td>${itemTag(s.item)}</td>
+        <td><button class="ho-item" data-ho-item="${s.item}" title="${esc(t('hoChooseMethod'))}">${itemTag(s.item)}</button></td>
         <td class="num"><b>${fmt(s.rate)}</b></td>
         <td class="ho-method">${method(s)}</td>
         <td>${machine(s)}</td>
@@ -356,7 +441,8 @@
     const byItem = Object.fromEntries(res.steps.map(s => [s.item, s]));
     const node = (item, rate, path, depth) => {
       const s = byItem[item];
-      const label = `${itemTag(item, 'sm')} <b class="num">${fmt(rate)}</b><span class="node-meta">${esc(t('perMin'))}</span>`;
+      const tag = res.herbOnly && s ? `<button class="ho-item" data-ho-item="${item}" title="${esc(t('hoChooseMethod'))}">${itemTag(item, 'sm')}</button>` : itemTag(item, 'sm');
+      const label = `${tag} <b class="num">${fmt(rate)}</b><span class="node-meta">${esc(t('perMin'))}</span>`;
       if (!s || path.has(item) || s.rate <= 0) {
         return `<details class="leafwrap"><summary class="leaf">${label}${s ? '' : ` <span class="badge teal">${esc(t('rawInputs'))}</span>`}</summary></details>`;
       }
@@ -852,9 +938,20 @@
     const b = e.target.closest('button');
     if (!b) {
       if (!$('#picker').hidden && !e.target.closest('#picker')) closePicker();
+      if (hoPop && !e.target.closest('#ho-pop')) closeHoPop();
       return;
     }
+    if (hoPop && !b.closest('#ho-pop') && !b.dataset.hoItem) closeHoPop();
     if (b.dataset.tab) { ui.tab = b.dataset.tab; renderTabs(); if (ui.tab === 'browser') renderBrowser(); if (ui.tab === 'cauldron') renderCauldron(); return; }
+    if (b.dataset.hoItem) { openHoPop(b.dataset.hoItem, b); return; }
+    if (b.dataset.hoSet !== undefined && hoPop) {
+      plan.hoForce = { ...(plan.hoForce || {}) };
+      if (b.dataset.hoSet) plan.hoForce[hoPop.item] = b.dataset.hoSet; else delete plan.hoForce[hoPop.item];
+      closeHoPop();
+      update();
+      return;
+    }
+    if (b.dataset.hoClose) { closeHoPop(); return; }
     if (b.dataset.pick) { const cb = pickerCb; closePicker(); if (cb) cb(b.dataset.pick === '__clear' ? '' : b.dataset.pick); return; }
     if (b.dataset.ptag !== undefined) { pickerTag = b.dataset.ptag; pickerActive = 0; renderPickerTags(); renderPickerList(); return; }
     if (!$('#picker').hidden && !b.closest('#picker')) closePicker();
@@ -992,6 +1089,7 @@
   });
 
   document.addEventListener('keydown', e => {
+    if (hoPop && e.key === 'Escape') { closeHoPop(); return; }
     if ($('#picker').hidden) return;
     const items = [...document.querySelectorAll('#picker-list .pick')];
     if (e.key === 'Escape') { closePicker(); return; }
