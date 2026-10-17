@@ -148,6 +148,7 @@ for seed, p in table('DT_PlantSeedConfig').items():
 growth = [{
     'source': src, 'plant': p['PlantName'], 'side': None if p['SideProductName'] == 'None' else p['SideProductName'],
     'nutrientPerItem': p['GrowthNutrientValue'], 'num': p['GrowthNum'], 'sideNum': p['SideGrowthNum'],
+    'seconds': p['GrowthSeconds'],
 } for src, p in table('DT_PlantSeedConfig').items() if p['PlantName'] != 'None' and p['GrowthNutrientValue'] > 0]
 
 # ---------------------------------------------------------------- machines
@@ -156,7 +157,7 @@ COMPONENT_DEFAULT = {  # component classes whose craft type is set in C++ rather
     'CauldronFacilityComponent': 'Cauldron', 'NurseryFacilityComponent': 'Nursery',
     'BuildingProduceComponent': 'TableSaw', 'CraftFacilityComponent': 'TableSaw', 'GrindFacilityComponent': 'TableSaw',
 }
-BP_DEFAULT = {'BP_SeedPlot': 'Plant'}
+BP_DEFAULT = {'BP_SeedPlot': 'Plant', 'BP_TreeNursery': 'WorldTree'}
 EXTRA_TYPES = {'AdvancedAthanor': ['Athanor']}  # Building_Desc_AdvancedAthanor2: also runs basic athanor recipes
 
 bp_info = {}

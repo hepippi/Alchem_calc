@@ -555,10 +555,484 @@
     };
   }
 
+  // ------------------------------------------------------------------ linear programming
+  /**
+   * Dense two-phase simplex. Minimises cost.x subject to rows (>= or <=) and x >= 0.
+   * cols: [{ rows: [rowIndex], vals: [coef] }], rhs: [b], sense: ['>=' | '<='], cost: [c].
+   * Returns { status, x, obj, y } where y are row duals in the original row orientation
+   * (reduced cost of a column a = c - y.a).
+   */
+  function lpSolve(cols, rhs, sense, cost) {
+    const m = rhs.length, n = cols.length;
+    const neg = sense.map((s, i) => s === '>=' && rhs[i] <= 1e-12);
+    const art = sense.map((s, i) => s === '>=' && rhs[i] > 1e-12);
+    const artCol = [];
+    let A = 0;
+    for (let i = 0; i < m; i++) artCol[i] = art[i] ? n + m + A++ : -1;
+    const W = n + m + A + 1, R = W - 1;
+    const T = [];
+    for (let i = 0; i < m; i++) {
+      const row = new Float64Array(W);
+      row[n + i] = art[i] ? -1 : 1; // surplus for real >= rows, slack otherwise
+      if (art[i]) row[artCol[i]] = 1;
+      // tiny distinct slack on homogeneous rows breaks the heavy degeneracy of balance constraints
+      row[R] = neg[i] ? -rhs[i] + 1e-9 * (1 + (i % 97) / 97) : rhs[i];
+      T.push(row);
+    }
+    cols.forEach((c, j) => {
+      for (let k = 0; k < c.rows.length; k++) T[c.rows[k]][j] += neg[c.rows[k]] ? -c.vals[k] : c.vals[k];
+    });
+    const basis = [];
+    for (let i = 0; i < m; i++) basis[i] = art[i] ? artCol[i] : n + i;
+    const EPS = 1e-9;
+    const z = new Float64Array(W);
+    const setObjective = c => {
+      z.fill(0);
+      for (let j = 0; j < W - 1; j++) z[j] = c(j);
+      for (let i = 0; i < m; i++) {
+        const cb = c(basis[i]);
+        if (cb) for (let j = 0; j < W; j++) z[j] -= cb * T[i][j];
+      }
+    };
+    const pivot = (r, e) => {
+      const pr = T[r], pv = pr[e];
+      for (let j = 0; j < W; j++) pr[j] /= pv;
+      for (let i = 0; i < m; i++) {
+        if (i === r) continue;
+        const f = T[i][e];
+        if (f) { const row = T[i]; for (let j = 0; j < W; j++) row[j] -= f * pr[j]; }
+      }
+      const f = z[e];
+      if (f) for (let j = 0; j < W; j++) z[j] -= f * pr[j];
+      basis[r] = e;
+    };
+    const run = blocked => {
+      let degenerate = 0;
+      for (let iter = 0; iter < 20000; iter++) {
+        let e = -1, best = -EPS;
+        const bland = degenerate > 40;
+        for (let j = 0; j < W - 1; j++) {
+          if (blocked(j)) continue;
+          if (z[j] < best) { e = j; best = z[j]; if (bland) break; }
+        }
+        if (e < 0) return 'optimal';
+        let r = -1, ratio = Infinity;
+        for (let i = 0; i < m; i++) {
+          const a = T[i][e];
+          if (a > EPS) {
+            const q = T[i][R] / a;
+            if (q < ratio - 1e-12 || (Math.abs(q - ratio) <= 1e-12 && basis[i] < basis[r])) { ratio = q; r = i; }
+          }
+        }
+        if (r < 0) return 'unbounded';
+        degenerate = ratio < 1e-12 ? degenerate + 1 : 0;
+        pivot(r, e);
+      }
+      return 'iteration-limit';
+    };
+    const isArt = j => j >= n + m && j < n + m + A;
+    if (A) {
+      setObjective(j => (isArt(j) ? 1 : 0));
+      run(() => false);
+      if (-z[R] > 1e-7) return { status: 'infeasible' };
+      for (let i = 0; i < m; i++) {
+        if (!isArt(basis[i])) continue;
+        for (let j = 0; j < n + m; j++) if (Math.abs(T[i][j]) > 1e-9) { pivot(i, j); break; }
+      }
+    }
+    setObjective(j => (j < n ? cost[j] : 0));
+    const status = run(isArt);
+    if (status !== 'optimal') return { status };
+    const x = new Float64Array(n);
+    for (let i = 0; i < m; i++) if (basis[i] < n) x[basis[i]] = T[i][R];
+    // duals: y' = c_B B^-1, read from the identity columns of the starting basis
+    const y = new Float64Array(m);
+    for (let i = 0; i < m; i++) {
+      const id = art[i] ? artCol[i] : n + i;
+      let s = 0;
+      for (let r = 0; r < m; r++) { const cb = basis[r] < n ? cost[basis[r]] : 0; if (cb) s += cb * T[r][id]; }
+      y[i] = neg[i] ? -s : s;
+    }
+    let obj = 0;
+    for (let j = 0; j < n; j++) obj += cost[j] * x[j];
+    return { status, x, obj, y };
+  }
+
+  // ------------------------------------------------------------------ herb-only planner
+  const HERB_PLAN_OBJECTIVES = ['space', 'nutrient', 'herbs', 'heat'];
+  const CAULDRON_STACK = 4; // cauldrons can be stacked 4 high, so one counts as 1/4 of a floor slot
+
+  /** Items that can be made from `herbs` using cauldron mixes and normal recipes. */
+  function herbClosure(data, idx, herbs) {
+    const cidx = cauldronIndex(data);
+    const avail = new Set(herbs);
+    const combos = {}; // cauldron mix that first made each item reachable (seeds the LP)
+    for (let pass = 0; pass < 30; pass++) {
+      let changed = false;
+      const routes = herbRoutes(data, { herbs: [...avail].filter(id => cidx.inputById[id]) });
+      for (const [id, b] of Object.entries(routes.best)) {
+        if (b.combo && b.combo.length === 3 && !combos[id]) combos[id] = b.combo;
+        if (!avail.has(id)) { avail.add(id); changed = true; }
+      }
+      for (const r of data.recipes) {
+        if (r.hidden || r.type === 'Cauldron' || r.type === 'Plant') continue;
+        if (r.in.every(i => avail.has(i.item))) for (const o of r.out) if (!avail.has(o.item)) { avail.add(o.item); changed = true; }
+      }
+      if (!changed) break;
+    }
+    avail.combos = combos;
+    return avail;
+  }
+
+  /** Cauldron output reached by value T (3-material rule), using the precomputed winning windows. */
+  function outputForValue(cidx, T) {
+    const outs = cidx.outputs;
+    let lo = 0, hi = outs.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (cidx.ranges[outs[mid].id].min <= T) lo = mid; else hi = mid - 1;
+    }
+    const o = outs[lo];
+    const r = cidx.ranges[o.id];
+    if (T - r.min < 1e-6 || r.max - T < 1e-6) return nearestOutput(cidx, T); // exact edge: tie rules
+    return o;
+  }
+
+  /**
+   * Production plan that uses only herbs as raw input, letting the solver pick for every item whether
+   * to make it in cauldrons (any 3-material mix) or with a normal recipe.
+   * Minimises, in order: floor space (machines + cauldrons / 4), fertilizer points, herbs, heat.
+   * Items are kept on a single production method where possible.
+   */
+  function solveHerbOnly(data, plan, idx, opts = {}) {
+    idx = idx || buildIndex(data);
+    const ctx = context(data, plan);
+    const cidx = cauldronIndex(data);
+    const herbs = (opts.herbs || herbItems(data).filter(h => h !== 'WorldTreeCore'));
+    const avail = herbClosure(data, idx, herbs);
+    const target = {};
+    for (const tg of plan.targets || []) {
+      if (!tg.item || !data.items[tg.item]) continue;
+      target[tg.item] = (target[tg.item] || 0) + Math.max(0, +tg.rate || 0);
+    }
+    const missing = Object.keys(target).filter(id => !avail.has(id));
+    if (missing.length) return { ok: false, reason: 'unreachable', missing };
+
+    // rows: one per reachable item
+    const items = [...avail];
+    const row = Object.fromEntries(items.map((id, i) => [id, i]));
+    const rhs = items.map(id => target[id] || 0);
+
+    // fixed columns: herb supply and herb-feasible normal recipes
+    const cols = [];
+    for (const h of herbs) {
+      if (!(h in row)) continue;
+      cols.push({ kind: 'herb', item: h, rows: [row[h]], vals: [1], c: [0, herbNutrient(data, h), 1, 0] });
+    }
+    for (const r of data.recipes) {
+      if (r.hidden || r.type === 'Cauldron' || r.type === 'Plant') continue;
+      if (!r.in.every(i => avail.has(i.item))) continue;
+      const e = effective(data, idx, plan, ctx, r);
+      if (!(e.craftsPerMin > 0) || e.mainOut <= 0) continue;
+      const net = {};
+      for (const i of r.in) net[i.item] = (net[i.item] || 0) - i.n;
+      for (const o of e.out) net[o.item] = (net[o.item] || 0) + o.n;
+      const keys = Object.keys(net).filter(k => k in row && Math.abs(net[k]) > 1e-12);
+      const perCraft = 1 / e.craftsPerMin; // machines per craft/min
+      cols.push({
+        kind: 'recipe', item: r.main, recipe: r, eff: e, rows: keys.map(k => row[k]), vals: keys.map(k => net[k]),
+        c: [perCraft, 0, 0, perCraft * e.heatPerMachine],
+      });
+    }
+    // cauldron columns are generated on demand
+    const cauldronKeys = new Set();
+    const pool = cidx.inputs.filter(x => avail.has(x.id));
+    const poolCost = pool.map(x => x.cost);
+    const cauldronCost = {};
+    for (const o of cidx.outputs) {
+      if (!avail.has(o.id)) continue;
+      const tm = cauldronTiming(o.target);
+      const perBatch = tm.time / ctx.factory / 60; // cauldrons per batch/min
+      cauldronCost[o.id] = { perBatch, c: [perBatch / CAULDRON_STACK, 0, 0, perBatch * tm.heat * ctx.factory] };
+    }
+    const addCauldron = ids => {
+      ids = ids.slice().sort();
+      const key = ids.join('+');
+      if (cauldronKeys.has(key)) return false;
+      const m = cauldronMix(data, ids);
+      if (!m || !(m.result in cauldronCost) || !(m.result in row)) return false;
+      const net = { [m.result]: 1 };
+      for (const id of ids) net[id] = (net[id] || 0) - 1;
+      const keys = Object.keys(net).filter(k => Math.abs(net[k]) > 1e-12);
+      if (!keys.every(k => k in row)) return false;
+      cauldronKeys.add(key);
+      cols.push({ kind: 'cauldron', item: m.result, combo: ids, key, rows: keys.map(k => row[k]), vals: keys.map(k => net[k]), c: cauldronCost[m.result].c });
+      return true;
+    };
+    // seed with the herb-route mixes so every cauldron output starts out reachable
+    const seed = herbRoutes(data, { herbs: herbs.filter(h => cidx.inputById[h]) });
+    for (const [id, b] of Object.entries(seed.best)) if (b.combo && b.combo.length === 3 && addCauldron(b.combo)) cols[cols.length - 1].seed = true;
+    for (const combo of Object.values(avail.combos)) if (addCauldron(combo)) cols[cols.length - 1].seed = true;
+
+    // per-objective scaling so every LP stage works with numbers around 1
+    const scale = HERB_PLAN_OBJECTIVES.map((_, k) => {
+      const v = cols.map(c => Math.abs(c.c[k])).filter(x => x > 0);
+      return v.length ? v.reduce((a, b) => a + b, 0) / v.length : 1;
+    });
+    const restrict = {}; // item -> allowed producer key (recipe id or 'cauldron:<combo>')
+    const producerKey = col => (col.kind === 'recipe' ? 'recipe:' + col.recipe.id : col.kind === 'cauldron' ? 'cauldron:' + col.key : null);
+    const allowed = col => {
+      if (col.kind === 'herb') return true;
+      const want = restrict[col.item];
+      return !want || want === producerKey(col);
+    };
+
+    /**
+     * Pricing: for every cauldron output find the mixes whose inputs are cheapest in dual prices and add
+     * those with negative reduced cost (up to `perOutput` per output and round).
+     */
+    const price = (y, capRows, costOf, tol, active, perOutput = 3) => {
+      // Duals of unused intermediates are 0 at this degenerate vertex, which would make them look free.
+      // Price every item at least at its cheapest production cost through the columns in the LP.
+      const q = productionCosts(active, costOf);
+      const yItem = pool.map(x => Math.max(y[row[x.id]] || 0, q[x.id] ?? Infinity));
+      const top = {};
+      const n = pool.length;
+      const ids3 = ['', '', ''], cost3 = [0, 0, 0];
+      for (let i = 0; i < n; i++) for (let j = i; j < n; j++) for (let l = j; l < n; l++) {
+        ids3[0] = pool[i].id; ids3[1] = pool[j].id; ids3[2] = pool[l].id;
+        cost3[0] = poolCost[i]; cost3[1] = poolCost[j]; cost3[2] = poolCost[l];
+        const o = outputForValue(cidx, cauldronValue3(cost3, ids3).T);
+        if (!o || !(o.id in cauldronCost)) continue;
+        if (restrict[o.id] && !restrict[o.id].startsWith('cauldron:')) continue;
+        const sum = yItem[i] + yItem[j] + yItem[l];
+        const list = top[o.id] || (top[o.id] = []);
+        if (list.length < perOutput || sum < list[list.length - 1].sum) {
+          list.push({ sum, idx: [i, j, l] });
+          list.sort((a, b) => a.sum - b.sum);
+          if (list.length > perOutput) list.pop();
+        }
+      }
+      let added = 0;
+      for (const [out, list] of Object.entries(top)) {
+        const cc = cauldronCost[out].c;
+        let base = costOf(cc) - (y[row[out]] || 0); // output +1, inputs -1 each => d = c - y_out + sum y_in
+        for (const cap of capRows) base -= cap.y * cc[cap.k] / scale[cap.k];
+        for (const { sum, idx: ix } of list) {
+          if (base + sum >= -tol) break;
+          const combo = ix.map(i => pool[i].id);
+          if (restrict[out] && restrict[out] !== 'cauldron:' + combo.slice().sort().join('+')) continue;
+          if (addCauldron(combo)) added++;
+        }
+      }
+      return added;
+    };
+
+    /** Cheapest cost to produce one unit of each item with the given columns (Bellman-Ford over recipes). */
+    const productionCosts = (active, costOf) => {
+      const q = {};
+      for (const c of active) if (c.kind === 'herb') q[c.item] = Math.min(q[c.item] ?? Infinity, costOf(c.c));
+      for (let pass = 0; pass < 40; pass++) {
+        let changed = false;
+        for (const c of active) {
+          if (c.kind === 'herb') continue;
+          let cost = costOf(c.c), outAmt = 0, ok = true;
+          for (let k = 0; k < c.rows.length; k++) {
+            const id = items[c.rows[k]], v = c.vals[k];
+            if (id === c.item) outAmt += v;
+            else if (v < 0) { const qi = q[id]; if (qi === undefined) { ok = false; break; } cost += -v * qi; }
+          }
+          if (!ok || outAmt <= 0) continue;
+          const val = cost / outAmt;
+          if (val < (q[c.item] ?? Infinity) - 1e-12) { q[c.item] = val; changed = true; }
+        }
+        if (!changed) break;
+      }
+      return q;
+    };
+
+    // Two LP stages: (1) floor space, with the lower priorities as tiny tie-breakers;
+    // (2) space capped at its optimum, then fertilizer points > herbs > heat.
+    const STAGES = [
+      { w: [1, 1e-3, 1e-5, 1e-7], caps: [] },
+      { w: [0, 1, 1e-3, 1e-5], caps: [0] },
+    ];
+    /** Optimisation with column generation. Returns { x (Map col -> crafts/min), objs } or null. */
+    const optimise = () => {
+      const limits = {};
+      let sol = null;
+      for (const stage of STAGES) {
+        const costOf = cc => stage.w.reduce((t, w, k) => t + (w ? w * cc[k] / scale[k] : 0), 0);
+        let lastObj = Infinity, stall = 0;
+        for (let round = 0; round < 40; round++) {
+          const active = cols.filter(allowed);
+          const lpCols = active.map(c => {
+            const rows = c.rows.slice(), vals = c.vals.slice();
+            stage.caps.forEach((k, i) => { if (c.c[k]) { rows.push(items.length + i); vals.push(c.c[k] / scale[k]); } });
+            return { rows, vals };
+          });
+          const lpRhs = rhs.concat(stage.caps.map(k => limits[k]));
+          const lpSense = items.map(() => '>=').concat(stage.caps.map(() => '<='));
+          const t1 = opts.prof ? Date.now() : 0;
+          const res = lpSolve(lpCols, lpRhs, lpSense, active.map(c => costOf(c.c)));
+          if (opts.prof) opts.prof.lp += Date.now() - t1;
+          if (opts.debug) opts.debug(STAGES.indexOf(stage), round, res.status, active.length, res.obj);
+          if (res.status !== 'optimal') return null;
+          sol = { active, res };
+          // degenerate LPs keep pricing in columns that cannot improve the objective: stop once it stalls
+          stall = res.obj < lastObj - 1e-6 * Math.max(1, Math.abs(res.obj)) ? 0 : stall + 1;
+          lastObj = Math.min(lastObj, res.obj);
+          if (stall >= 2) break;
+          const capDuals = stage.caps.map((k, i) => ({ k, y: res.y[items.length + i] }));
+          const t0 = opts.prof ? Date.now() : 0;
+          const more = price(res.y, capDuals, costOf, 1e-4 * Math.max(1, Math.abs(res.obj)), active);
+          if (opts.prof) opts.prof.price += Date.now() - t0;
+          if (!more) break;
+        }
+        // record the optimum of the main objective; drop unused generated mixes to keep the LP small
+        const x = sol.res.x;
+        const main = stage.w.indexOf(1);
+        limits[main] = sol.active.reduce((t, c, j) => t + c.c[main] / scale[main] * x[j], 0) * (1 + 1e-6) + 1e-9;
+        const used = new Set(sol.active.filter((c, j) => x[j] > 1e-12));
+        for (let j = cols.length - 1; j >= 0; j--) {
+          const c = cols[j];
+          if (c.kind === 'cauldron' && !c.seed && !used.has(c) && restrict[c.item] !== producerKey(c)) { cols.splice(j, 1); cauldronKeys.delete(c.key); }
+        }
+      }
+      // activities this small are artefacts of the anti-degeneracy perturbation, not real production
+      const x = new Map();
+      const xmax = Math.max(...sol.res.x);
+      sol.active.forEach((c, j) => { if (sol.res.x[j] > 1e-5 * xmax) x.set(c, sol.res.x[j]); });
+      const objs = HERB_PLAN_OBJECTIVES.map((_, k) => sol.active.reduce((t, c, j) => t + c.c[k] * sol.res.x[j], 0));
+      if (opts.debug) opts.debug('objs', objs);
+      return { x, objs };
+    };
+
+    let best = optimise();
+    if (!best) return { ok: false, reason: 'infeasible' };
+    // keep each item on one production method: when any item is split, pin every produced item to its
+    // main producer and re-solve (rates may still change; tiny numerical splits disappear in one round)
+    for (let guard = 0; guard < 6; guard++) {
+      const by = {};
+      for (const [c, xv] of best.x) {
+        if (c.kind === 'herb') continue;
+        const out = c.kind === 'cauldron' ? xv : xv * c.eff.mainOut;
+        (by[c.item] = by[c.item] || []).push({ c, out });
+      }
+      const splits = Object.values(by).filter(list => list.length > 1);
+      if (!splits.length) break;
+      const pinned = [];
+      for (const [item, list] of Object.entries(by)) {
+        if (restrict[item]) continue;
+        restrict[item] = producerKey(list.sort((a, b) => b.out - a.out)[0].c);
+        pinned.push(item);
+      }
+      if (opts.debug) opts.debug('pin', pinned.length, splits.length);
+      const r = optimise();
+      if (!r) { for (const item of pinned) delete restrict[item]; break; }
+      best = r;
+    }
+
+    // ---- assemble result in the same shape as solve()
+    const supply = {}, consumed = {}, produced = {};
+    const steps = [];
+    let heat = 0, nutrient = 0, herbTotal = 0, cauldrons = 0, machinesFloor = 0;
+    for (const [c, xv] of best.x) {
+      if (c.kind === 'herb') {
+        supply[c.item] = (supply[c.item] || 0) + xv;
+        nutrient += xv * c.c[1];
+        herbTotal += xv;
+        continue;
+      }
+      c.rows.forEach((ri, i) => {
+        const id = items[ri], v = c.vals[i] * xv;
+        if (v > 0) produced[id] = (produced[id] || 0) + v; else consumed[id] = (consumed[id] || 0) - v;
+      });
+      if (c.kind === 'recipe') {
+        const e = c.eff;
+        const machines = xv / e.craftsPerMin;
+        heat += machines * e.heatPerMachine;
+        machinesFloor += machines;
+        steps.push({
+          item: c.item, method: 'recipe', recipe: c.recipe.id, type: c.recipe.type, machine: e.machineId,
+          crafts: xv, rate: xv * e.mainOut, machines, heat: machines * e.heatPerMachine,
+          inputs: c.recipe.in.map(i => ({ item: i.item, rate: xv * i.n })),
+          outputs: e.out.map(o => ({ item: o.item, rate: xv * o.n, p: o.p })), fertilizer: 0,
+        });
+      } else {
+        const cc = cauldronCost[c.item];
+        const machines = xv * cc.perBatch;
+        const h = xv * cc.c[3];
+        heat += h;
+        cauldrons += machines;
+        const counts = {};
+        for (const id of c.combo) counts[id] = (counts[id] || 0) + 1;
+        steps.push({
+          item: c.item, method: 'cauldron', recipe: 'cauldron', combo: c.combo, type: 'Cauldron', machine: 'Cauldron',
+          crafts: xv, rate: xv, machines, heat: h, stacks: machines / CAULDRON_STACK,
+          inputs: Object.entries(counts).map(([item, n]) => ({ item, rate: xv * n })),
+          outputs: [{ item: c.item, rate: xv }], fertilizer: 0,
+        });
+      }
+    }
+    // order: targets first, then by distance from a target
+    const depth = {};
+    const visit = (item, d, seen) => {
+      if (seen.has(item) || (depth[item] ?? -1) >= d) return;
+      depth[item] = d;
+      seen.add(item);
+      for (const s of steps.filter(x => x.item === item)) for (const i of s.inputs) visit(i.item, d + 1, seen);
+      seen.delete(item);
+    };
+    for (const t of Object.keys(target)) visit(t, 0, new Set());
+    steps.sort((a, b) => (depth[a.item] ?? 99) - (depth[b.item] ?? 99) || b.rate - a.rate);
+
+    const raw = Object.entries(supply).map(([item, rate]) => ({ item, rate, nutrient: rate * herbNutrient(data, item), growers: herbGrowers(data, plan, ctx, item, rate) }))
+      .sort((a, b) => b.rate - a.rate);
+    const surplus = [];
+    const surplusScale = Math.max(1e-6, ...Object.values(target));
+    for (const id of items) {
+      const extra = (produced[id] || 0) + (supply[id] || 0) - (consumed[id] || 0) - (target[id] || 0);
+      const flow = (produced[id] || 0) + (supply[id] || 0);
+      if (extra > 1e-4 * Math.max(surplusScale, flow) && !(id in target)) surplus.push({ item: id, rate: extra });
+    }
+    surplus.sort((a, b) => b.rate - a.rate);
+    const fuel = plan.fuel && data.items[plan.fuel] && data.items[plan.fuel].heat > 0 ? plan.fuel : null;
+    const split = Object.entries(steps.reduce((m, s) => { m[s.item] = (m[s.item] || 0) + 1; return m; }, {})).filter(([, n]) => n > 1).map(([id]) => id);
+    return {
+      ok: true, herbOnly: true, ctx, targets: target, steps, raw, surplus, depth, split,
+      heat, fuel, fuelPerMin: fuel && heat > 0 ? heat * 60 / (data.items[fuel].heat * ctx.fuelEff) : 0,
+      fertilizer: null, fertilizerPerMin: 0, nutrient, herbTotal, cauldrons, stacks: Math.ceil(cauldrons / CAULDRON_STACK - 1e-9),
+      space: machinesFloor + cauldrons / CAULDRON_STACK, objectives: best.objs,
+    };
+  }
+
+  /** Planting machines needed to harvest `rate` herbs per minute (seed plots, nurseries or the World Tree). */
+  function herbGrowers(data, plan, ctx, item, rate) {
+    const g = (data.growth || []).filter(x => x.plant === item || x.side === item)
+      .sort((a, b) => a.nutrientPerItem - b.nutrientPerItem)[0];
+    if (!g) return null;
+    const perCycle = g.plant === item ? g.num : g.sideNum;
+    const seed = Object.entries(data.plants || {}).find(([, p]) => p.plant === g.plant);
+    const fert = plan.fertilizer && data.items[plan.fertilizer];
+    if (!seed) {
+      // World Tree: one tree per nursery, `seconds` per growth stage
+      return { machine: 'WorldTreeNursery', count: rate / (perCycle / (g.seconds || 4320) * 60 * ctx.factory) };
+    }
+    const p = seed[1];
+    if (fert && fert.nutrient > 0 && fert.nutrientSpeed > 0) {
+      const mainPerMin = Math.min(60 * fert.nutrientSpeed * ctx.factory / p.nutrientPerItem, ctx.belt);
+      const perMin = g.plant === item ? mainPerMin : mainPerMin * p.sideNum / p.num;
+      return { machine: 'AutoNursery', count: rate / perMin };
+    }
+    return { machine: 'SeedPlot', count: rate / (perCycle / p.seconds * 60 * ctx.factory) };
+  }
+
   const api = {
     solve, buildIndex, defaultRecipe, chosenRecipe, chosenMachine, researchValue, recipeStats, context,
     cauldronIndex, cauldronMix, cauldronSearch, cauldronBest, cauldronRecipe, cauldronTiming,
     herbItems, herbRoutes, herbRoute, herbAlternatives, herbNutrient,
+    lpSolve, solveHerbOnly, herbGrowers,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.AFCalc = api;

@@ -19,7 +19,7 @@
   const DEFAULT_PLAN = {
     targets: [], recipes: {}, machines: {}, cauldron: {},
     research: { factory: 0, fuel: 0, fertilizer: 0, alchemy: 0, logistics: 0 },
-    fuel: 'Charcoal', fertilizer: '', byproducts: 'recycle', selfSupply: false,
+    fuel: 'Charcoal', fertilizer: '', byproducts: 'recycle', selfSupply: false, herbOnly: false, herbCore: false,
   };
   const ui = {
     lang: store.get('af.lang', (navigator.language || 'ja').startsWith('ja') ? 'ja' : 'en'),
@@ -137,6 +137,9 @@
       `<option value="${id}" ${plan.fertilizer === id ? 'selected' : ''}>${esc(nm(id))} (${fmt(it.nutrient * eff)}V, ${fmt(it.nutrientSpeed)}V/s)</option>`).join('');
     $('#byp-select').value = plan.byproducts;
     $('#self-supply').checked = !!plan.selfSupply;
+    $('#herb-only').checked = !!plan.herbOnly;
+    $('#herb-core').checked = !!plan.herbCore;
+    $('#herb-core-wrap').hidden = !plan.herbOnly;
     $('#lang-select').innerHTML = D.langs.map(l => `<option value="${l}" ${l === ui.lang ? 'selected' : ''}>${LANG_LABELS[l] || l}</option>`).join('');
   }
 
@@ -175,6 +178,69 @@
   const chip = (item, rate, extra = '') => `<span class="chip" title="${esc(nm(item))}">${itemIco(item)}<b>${fmt(rate)}</b><span class="muted">${esc(nm(item))}</span>${extra}</span>`;
   const pill = (item, rate, sub = '', action = '') => `<div class="pill">${itemIco(item)}<div class="meta"><span>${esc(nm(item))}</span><b>${fmt(rate)}<small class="muted"> ${t('perMin')}</small></b>${sub ? `<small>${sub}</small>` : ''}</div>${action}</div>`;
 
+  // ------------------------------------------------------------------ herb-only planner results
+  let hoCache = { key: '', res: null };
+  function herbOnlyResult() {
+    const herbs = C.herbItems(D).filter(h => plan.herbCore || h !== 'WorldTreeCore');
+    const key = JSON.stringify([plan.targets, plan.research, plan.machines, plan.fertilizer, plan.fuel, herbs]);
+    if (hoCache.key !== key) hoCache = { key, res: C.solveHerbOnly(D, plan, IDX, { herbs }) };
+    return hoCache.res;
+  }
+
+  function renderHerbOnlyResults(el) {
+    const res = herbOnlyResult();
+    if (!res.ok) {
+      el.innerHTML = res.reason === 'unreachable'
+        ? `<div class="alert">${esc(t('hoUnreachable', { items: res.missing.map(nm).join(', ') }))}</div>`
+        : `<div class="alert">${esc(t('hoInfeasible'))}</div>`;
+      return;
+    }
+    const recipeSteps = res.steps.filter(s => s.method === 'recipe');
+    const machineCount = recipeSteps.reduce((n, s) => n + Math.ceil(s.machines - 1e-9), 0);
+    const cauldronCount = res.steps.filter(s => s.method === 'cauldron').reduce((n, s) => n + Math.ceil(s.machines - 1e-9), 0);
+    const stat = (label, value, small = '', extra = '') => `<div class="stat"><div class="label">${esc(label)}</div><div class="value">${value}<small>${esc(small)}</small></div>${extra}</div>`;
+    const parts = [];
+    if (res.split && res.split.length) parts.push(`<div class="alert">${esc(t('hoSplitWarn', { items: res.split.map(nm).join(', ') }))}</div>`);
+    parts.push(`<div class="summary">
+      ${stat(t('hoSpace'), fmt(res.space), '', `<div class="extra">${esc(t('hoSpaceHint'))}</div>`)}
+      ${stat(t('hoMachines'), machineCount, t('unitMachines'))}
+      ${stat(t('hoCauldrons'), cauldronCount, t('unitMachines'), `<div class="extra">${esc(t('hoStacks', { n: Math.ceil(cauldronCount / 4) }))}</div>`)}
+      ${stat(t('hoNutrient'), fmt(res.nutrient), t('hoPerMin'))}
+      ${stat(t('hoHerbs'), fmt(res.herbTotal), t('hoPerMin'))}
+      ${stat(t('heatTotal'), fmt(res.heat), t('heatUnit'), res.fuel && res.heat > 0 ? `<div class="extra">${itemIco(res.fuel)}${esc(nm(res.fuel))} ${fmt(res.fuelPerMin)}${esc(t('perMin'))}</div>` : '')}
+    </div>`);
+    const isTarget = id => id in res.targets;
+    const method = s => s.method === 'cauldron'
+      ? `<span class="badge">${esc(t('hoMethodCauldron'))}</span> <span class="inputs">${s.combo.map(id => `<span class="chip">${itemIco(id)}<span class="muted">${esc(nm(id))}</span></span>`).join('<span class="muted">+</span>')}</span>`
+      : `<span class="badge teal">${esc(t('hoMethodRecipe'))}</span> ${esc(recipeLabel(IDX.recipeById[s.recipe]))}`;
+    const machine = s => s.method === 'cauldron'
+      ? `<span class="it sm">${ico(D.machines.Cauldron && D.machines.Cauldron.icon)}<span>${esc(mn('Cauldron'))}</span></span>`
+      : machineCell(s);
+    const body = ui.view === 'tree' ? renderTree(res) : `<div class="table-wrap"><table class="line">
+      <thead><tr><th>${esc(t('colItem'))}</th><th class="num">${esc(t('colRate'))}</th><th>${esc(t('colRecipe'))}</th><th>${esc(t('colMachine'))}</th>
+      <th class="num">${esc(t('colCount'))}</th><th>${esc(t('colInputs'))}</th><th class="num">${esc(t('colHeat'))}</th></tr></thead>
+      <tbody>${res.steps.map(s => `<tr class="${isTarget(s.item) ? 'target-row' : ''}">
+        <td>${itemTag(s.item)}</td>
+        <td class="num"><b>${fmt(s.rate)}</b></td>
+        <td class="ho-method">${method(s)}</td>
+        <td>${machine(s)}</td>
+        <td class="num count">${fmt(s.machines)}<span class="ceil">(${Math.ceil(s.machines - 1e-9)})</span></td>
+        <td><div class="inputs">${s.inputs.map(i => chip(i.item, i.rate)).join('')}</div></td>
+        <td class="num">${s.heat ? fmt(s.heat) : '<span class="muted">—</span>'}</td>
+      </tr>`).join('')}</tbody></table></div>`;
+    parts.push(`<div class="card"><div class="section-head"><h2>${esc(t('productionLine'))}</h2>
+      <div class="seg"><button data-view="table" aria-pressed="${ui.view !== 'tree'}">${esc(t('tableView'))}</button><button data-view="tree" aria-pressed="${ui.view === 'tree'}">${esc(t('treeView'))}</button></div></div>${body}</div>`);
+    const herbsHtml = `<div class="chip-list">${res.raw.map(r => {
+      const g = r.growers;
+      const sub = [r.nutrient ? `${t('hoNutrient')} ${fmt(r.nutrient)}${t('hoPerMin')}` : '', g ? `${mn(g.machine)} × ${fmt(g.count)} (${Math.ceil(g.count - 1e-9)})` : ''].filter(Boolean).join(' · ');
+      return pill(r.item, r.rate, esc(sub));
+    }).join('')}</div>`;
+    const surplusHtml = res.surplus.length ? `<div class="chip-list">${res.surplus.map(r => pill(r.item, r.rate)).join('')}</div>` : `<p class="muted">${esc(t('none'))}</p>`;
+    parts.push(`<div class="grid-2"><div class="card"><h2>${esc(t('hoHerbsNeeded'))}</h2><div style="margin-top:10px">${herbsHtml}</div></div>
+      <div class="card"><h2>${esc(t('surplus'))}</h2><div style="margin-top:10px">${surplusHtml}</div></div></div>`);
+    el.innerHTML = parts.join('');
+  }
+
   function renderResults() {
     const el = $('#results');
     const active = plan.targets.filter(x => x.item && +x.rate > 0);
@@ -182,6 +248,7 @@
       el.innerHTML = `<div class="empty-state">${ico('icons/T_UI_Athanor.png')}<p>${esc(t('emptyPlan'))}</p></div>`;
       return;
     }
+    if (plan.herbOnly) { renderHerbOnlyResults(el); return; }
     const res = C.solve(D, plan, IDX);
     const totalMachines = res.steps.reduce((s, x) => s + Math.ceil(x.machines - 1e-9), 0);
     const parts = [];
@@ -820,6 +887,8 @@
     if (el.id === 'fert-select') { plan.fertilizer = el.value; update(); return; }
     if (el.id === 'byp-select') { plan.byproducts = el.value; update(); return; }
     if (el.id === 'self-supply') { plan.selfSupply = el.checked; update(); return; }
+    if (el.id === 'herb-only') { plan.herbOnly = el.checked; update(); return; }
+    if (el.id === 'herb-core') { plan.herbCore = el.checked; update(); return; }
     if (el.id === 'hb-metric') { hb.metric = el.value; hb.alt = null; saveHb(); renderHerb(); return; }
     if (el.id === 'hb-two') { hb.allowTwo = el.checked; hb.alt = null; saveHb(); renderHerb(); return; }
     if (el.id === 'cd-mode') { cd.mode = el.value; saveCd(); renderCdRev(); return; }

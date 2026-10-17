@@ -392,3 +392,10 @@ table.line select { max-width: 220px; font-size: 12px; padding: 4px 6px; }
 .hb-reach .table-wrap { margin-top: 8px; }
 .hb-pick { border: 0; background: none; padding: 0; cursor: pointer; color: inherit; }
 .hb-pick:hover span { text-decoration: underline; }
+
+/* ---------- herb-only planner */
+.herb-only-toggle { margin-top: 12px; padding: 8px 10px; border-radius: 10px; background: var(--accent-soft); }
+.herb-only-toggle > span > span { font-weight: 650; color: var(--accent); }
+.herb-only-sub { margin: 6px 0 0 26px; font-size: 13px; }
+.ho-method { min-width: 220px; }
+.ho-method .inputs { display: inline-flex; gap: 2px 4px; vertical-align: middle; }

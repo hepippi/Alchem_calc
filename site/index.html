@@ -42,6 +42,14 @@
           </div>
           <div id="targets"></div>
           <button class="btn add" id="add-target"><span>＋</span> <span data-t="addTarget">目標を追加</span></button>
+          <label class="check herb-only-toggle">
+            <input type="checkbox" id="herb-only">
+            <span><span data-t="herbOnly">薬草のみで完結（大釜を自動で併用）</span><small data-t="herbOnlyHint"></small></span>
+          </label>
+          <label class="check herb-only-sub" id="herb-core-wrap">
+            <input type="checkbox" id="herb-core">
+            <span data-t="herbOnlyCore">世界樹の核も薬草として使う</span>
+          </label>
         </div>
 
         <div class="card card-settings">
