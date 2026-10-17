@@ -781,12 +781,26 @@
       const v = cols.map(c => Math.abs(c.c[k])).filter(x => x > 0);
       return v.length ? v.reduce((a, b) => a + b, 0) / v.length : 1;
     });
-    const restrict = {}; // item -> allowed producer key (recipe id or 'cauldron:<combo>')
+    // item -> allowed producer: 'recipe:<id>', 'cauldron:<sorted combo>' or 'cauldron:*' (any mix)
+    const restrict = {};
+    const forced = {};
+    for (const [item, how] of Object.entries(opts.force || {})) {
+      if (!how || !(item in row)) continue;
+      if (how === 'cauldron') restrict[item] = 'cauldron:*';
+      else if (how.startsWith('cauldron:')) {
+        const ids = how.slice(9).split('+');
+        const m = cauldronMix(data, ids);
+        if (!m || m.result !== item) continue;
+        addCauldron(ids);
+        restrict[item] = 'cauldron:' + ids.slice().sort().join('+');
+      } else restrict[item] = how;
+      forced[item] = restrict[item];
+    }
     const producerKey = col => (col.kind === 'recipe' ? 'recipe:' + col.recipe.id : col.kind === 'cauldron' ? 'cauldron:' + col.key : null);
     const allowed = col => {
       if (col.kind === 'herb') return true;
       const want = restrict[col.item];
-      return !want || want === producerKey(col);
+      return !want || want === producerKey(col) || (want === 'cauldron:*' && col.kind === 'cauldron');
     };
 
     /**
@@ -823,7 +837,7 @@
         for (const { sum, idx: ix } of list) {
           if (base + sum >= -tol) break;
           const combo = ix.map(i => pool[i].id);
-          if (restrict[out] && restrict[out] !== 'cauldron:' + combo.slice().sort().join('+')) continue;
+          if (restrict[out] && restrict[out] !== 'cauldron:*' && restrict[out] !== 'cauldron:' + combo.slice().sort().join('+')) continue;
           if (addCauldron(combo)) added++;
         }
       }
@@ -914,7 +928,7 @@
     };
 
     let best = optimise();
-    if (!best) return { ok: false, reason: 'infeasible' };
+    if (!best) return { ok: false, reason: Object.keys(forced).length ? 'forced' : 'infeasible', forced: Object.keys(forced) };
     // keep each item on one production method: when any item is split, pin every produced item to its
     // main producer and re-solve (rates may still change; tiny numerical splits disappear in one round)
     for (let guard = 0; guard < 6; guard++) {
@@ -928,7 +942,7 @@
       if (!splits.length) break;
       const pinned = [];
       for (const [item, list] of Object.entries(by)) {
-        if (restrict[item]) continue;
+        if (restrict[item] && restrict[item] !== 'cauldron:*') continue;
         restrict[item] = producerKey(list.sort((a, b) => b.out - a.out)[0].c);
         pinned.push(item);
       }
@@ -959,7 +973,7 @@
         heat += machines * e.heatPerMachine;
         machinesFloor += machines;
         steps.push({
-          item: c.item, method: 'recipe', recipe: c.recipe.id, type: c.recipe.type, machine: e.machineId,
+          item: c.item, method: 'recipe', recipe: c.recipe.id, type: c.recipe.type, machine: e.machineId, forced: !!forced[c.item],
           crafts: xv, rate: xv * e.mainOut, machines, heat: machines * e.heatPerMachine,
           inputs: c.recipe.in.map(i => ({ item: i.item, rate: xv * i.n })),
           outputs: e.out.map(o => ({ item: o.item, rate: xv * o.n, p: o.p })), fertilizer: 0,
@@ -973,7 +987,7 @@
         const counts = {};
         for (const id of c.combo) counts[id] = (counts[id] || 0) + 1;
         steps.push({
-          item: c.item, method: 'cauldron', recipe: 'cauldron', combo: c.combo, type: 'Cauldron', machine: 'Cauldron',
+          item: c.item, method: 'cauldron', recipe: 'cauldron', combo: c.combo, type: 'Cauldron', machine: 'Cauldron', forced: !!forced[c.item],
           crafts: xv, rate: xv, machines, heat: h, stacks: machines / CAULDRON_STACK,
           inputs: Object.entries(counts).map(([item, n]) => ({ item, rate: xv * n })),
           outputs: [{ item: c.item, rate: xv }], fertilizer: 0,

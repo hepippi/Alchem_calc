@@ -19,7 +19,7 @@
   const DEFAULT_PLAN = {
     targets: [], recipes: {}, machines: {}, cauldron: {},
     research: { factory: 0, fuel: 0, fertilizer: 0, alchemy: 0, logistics: 0 },
-    fuel: 'Charcoal', fertilizer: '', byproducts: 'recycle', selfSupply: false, herbOnly: false, herbCore: false, hoPriority: 'space', hoLeaf: 'noCauldron', hoCoin: true,
+    fuel: 'Charcoal', fertilizer: '', byproducts: 'recycle', selfSupply: false, herbOnly: false, herbCore: false, hoPriority: 'space', hoLeaf: 'noCauldron', hoCoin: true, hoForce: {},
   };
   const ui = {
     lang: store.get('af.lang', (navigator.language || 'ja').startsWith('ja') ? 'ja' : 'en'),
@@ -188,8 +188,9 @@
     const herbs = C.herbItems(D).filter(h => (plan.herbCore || h !== 'WorldTreeCore') && (leaf !== 'none' || h !== 'WorldTreeLeaf'));
     const noCauldron = [...(leaf === 'noCauldron' ? ['WorldTreeLeaf'] : []), ...(plan.hoCoin !== false ? ['CopperCoin'] : [])];
     const priority = plan.hoPriority || 'space';
-    const key = JSON.stringify([plan.targets, plan.research, plan.machines, plan.fertilizer, plan.fuel, herbs, noCauldron, priority]);
-    if (hoCache.key !== key) hoCache = { key, res: C.solveHerbOnly(D, plan, IDX, { herbs, noCauldron, priority }) };
+    const force = plan.hoForce || {};
+    const key = JSON.stringify([plan.targets, plan.research, plan.machines, plan.fertilizer, plan.fuel, herbs, noCauldron, priority, force]);
+    if (hoCache.key !== key) hoCache = { key, res: C.solveHerbOnly(D, plan, IDX, { herbs, noCauldron, priority, force }) };
     return hoCache.res;
   }
 
@@ -217,7 +218,9 @@
       }
       el.innerHTML = res.reason === 'unreachable'
         ? `<div class="alert">${esc(t('hoUnreachable', { items: res.missing.map(nm).join(', ') }))}${hint}</div>`
-        : `<div class="alert">${esc(t('hoInfeasible'))}</div>`;
+        : res.reason === 'forced'
+          ? `<div class="alert">${esc(t('hoForcedInfeasible', { items: res.forced.map(nm).join(', ') }))} <button class="link-btn" data-ho-clear="1">${esc(t('hoClearForce'))}</button></div>`
+          : `<div class="alert">${esc(t('hoInfeasible'))}</div>`;
       return;
     }
     const recipeSteps = res.steps.filter(s => s.method === 'recipe');
@@ -236,9 +239,35 @@
       ${stat(t('heatTotal'), fmt(res.heat), t('heatUnit'), res.fuel && res.heat > 0 ? `<div class="extra">${itemIco(res.fuel)}${esc(nm(res.fuel))} ${fmt(res.fuelPerMin)}${esc(t('perMin'))}</div>` : '')}
     </div>`);
     const isTarget = id => id in res.targets;
-    const method = s => s.method === 'cauldron'
+    const detail = s => s.method === 'cauldron'
       ? `<span class="badge">${esc(t('hoMethodCauldron'))}</span> <span class="inputs">${s.combo.map(id => `<span class="chip">${itemIco(id)}<span class="muted">${esc(nm(id))}</span></span>`).join('<span class="muted">+</span>')}</span>`
       : `<span class="badge teal">${esc(t('hoMethodRecipe'))}</span> ${esc(recipeLabel(IDX.recipeById[s.recipe]))}`;
+    const comboKey = ids => 'cauldron:' + ids.slice().sort().join('+');
+    const method = s => {
+      const cur = (plan.hoForce || {})[s.item] || '';
+      const opts = [['', t('hoAuto')]];
+      if (isCdOutput(s.item)) {
+        opts.push(['cauldron', t('hoForceCauldron')]);
+        const combos = [];
+        if (s.method === 'cauldron') combos.push(s.combo);
+        const saved = plan.cauldron && plan.cauldron[s.item];
+        if (saved && C.cauldronRecipe(D, s.item, saved)) combos.push(saved);
+        if (cur.startsWith('cauldron:') && cur !== 'cauldron') combos.push(cur.slice(9).split('+'));
+        const seen = new Set();
+        for (const c of combos) {
+          const k = comboKey(c);
+          if (seen.has(k)) continue;
+          seen.add(k);
+          opts.push([k, `${t('hoMethodCauldron')}: ${c.map(nm).join(' + ')}`]);
+        }
+      }
+      for (const r of IDX.byMain[s.item] || []) {
+        if (r.type === 'Cauldron' || r.type === 'Plant') continue;
+        opts.push(['recipe:' + r.id, `${t('hoMethodRecipe')}: ${recipeLabel(r)}`]);
+      }
+      const sel = `<select class="ho-force" data-ho-force="${s.item}">${opts.map(([v, l]) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
+      return `${sel}${s.forced ? ` <span class="badge pin">${esc(t('hoForced'))}</span>` : ''}<div class="ho-detail">${detail(s)}</div>`;
+    };
     const machine = s => s.method === 'cauldron'
       ? `<span class="it sm">${ico(D.machines.Cauldron && D.machines.Cauldron.icon)}<span>${esc(mn('Cauldron'))}</span></span>`
       : machineCell(s);
@@ -254,7 +283,9 @@
         <td><div class="inputs">${s.inputs.map(i => chip(i.item, i.rate)).join('')}</div></td>
         <td class="num">${s.heat ? fmt(s.heat) : '<span class="muted">—</span>'}</td>
       </tr>`).join('')}</tbody></table></div>`;
+    const nForced = Object.keys(plan.hoForce || {}).length;
     parts.push(`<div class="card"><div class="section-head"><h2>${esc(t('productionLine'))}</h2>
+      ${nForced ? `<button class="link-btn" data-ho-clear="1">${esc(t('hoClearForce'))} (${nForced})</button>` : ''}
       <div class="seg"><button data-view="table" aria-pressed="${ui.view !== 'tree'}">${esc(t('tableView'))}</button><button data-view="tree" aria-pressed="${ui.view === 'tree'}">${esc(t('treeView'))}</button></div></div>${body}</div>`);
     const herbsHtml = `<div class="chip-list">${res.raw.map(r => {
       const g = r.growers;
@@ -645,6 +676,7 @@
     if (d.cdUse) {
       plan.cauldron = { ...(plan.cauldron || {}), [d.cdUse]: d.inputs.split(',') };
       plan.recipes[d.cdUse] = 'cauldron';
+      if (plan.herbOnly) plan.hoForce = { ...(plan.hoForce || {}), [d.cdUse]: 'cauldron:' + d.inputs.split(',').sort().join('+') };
       update();
       toast(`${t('cdUsed')}: ${nm(d.cdUse)}`);
       return true;
@@ -866,6 +898,7 @@
       update();
       return;
     }
+    if (b.dataset.hoClear) { plan.hoForce = {}; update(); return; }
     if (b.id === 'theme-btn') {
       const cur = document.documentElement.dataset.theme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
       const next = cur === 'dark' ? 'light' : 'dark';
@@ -908,6 +941,12 @@
     const row = el.closest('.target');
     if (row && el.dataset.act === 'unit') { plan.targets[+row.dataset.i].unit = el.value; update(); return; }
     if (el.dataset.recipe) { plan.recipes[el.dataset.recipe] = el.value; update(); return; }
+    if (el.dataset.hoForce) {
+      plan.hoForce = { ...(plan.hoForce || {}) };
+      if (el.value) plan.hoForce[el.dataset.hoForce] = el.value; else delete plan.hoForce[el.dataset.hoForce];
+      update();
+      return;
+    }
     if (el.dataset.machine) { plan.machines[el.dataset.machine] = el.value; update(); return; }
     if (el.id === 'fuel-select') { plan.fuel = el.value; update(); return; }
     if (el.id === 'fert-select') { plan.fertilizer = el.value; update(); return; }

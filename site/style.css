@@ -403,3 +403,7 @@ table.line select { max-width: 220px; font-size: 12px; padding: 4px 6px; }
 .stat.fert-down .value { color: var(--danger); }
 .ho-method { min-width: 220px; }
 .ho-method .inputs { display: inline-flex; gap: 2px 4px; vertical-align: middle; }
+
+.ho-force { max-width: 260px; font-size: 12px; padding: 3px 6px; }
+.ho-detail { margin-top: 4px; font-size: 12px; }
+.badge.pin { background: var(--teal-soft); color: var(--teal); }
