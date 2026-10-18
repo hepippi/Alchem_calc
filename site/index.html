@@ -223,7 +223,7 @@
       </ul>
     </details>
     <p>Alchemy Factory © D5 Copperhead. Fan-made tool; game data and icons belong to their owners.
-      Source: <a href="https://github.com/hepippi/Alchem_calc">GitHub</a> (GPL-3.0). Blueprint decoding uses <a href="https://github.com/SnosMe/ooz-wasm">ooz-wasm</a> (GPL-3.0).</p>
+      Source: <a href="https://github.com/hepippi/Alchem_calc">GitHub</a> (GPL-3.0). Blueprint decoding uses <a href="https://github.com/SnosMe/ooz-wasm">ooz-wasm</a> (GPL-3.0); 3D view uses <a href="https://threejs.org/">three.js</a> (MIT).</p>
   </footer>
 
   <div id="picker" class="picker" hidden>
@@ -234,6 +234,7 @@
   <div id="ho-pop" class="ho-pop" hidden role="dialog"></div>
   <div id="toast" class="toast" hidden></div>
 
+  <script type="importmap">{ "imports": { "three": "./vendor/three/three.module.min.js" } }</script>
   <script src="data/gamedata.js"></script>
   <script src="i18n.js"></script>
   <script src="calc.js"></script>

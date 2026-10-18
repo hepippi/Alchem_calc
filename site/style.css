@@ -449,9 +449,12 @@ table.line select { max-width: 220px; font-size: 12px; padding: 4px 6px; }
 .bp-layer.disabled { opacity: .45; }
 .bp-zoom { display: inline-flex; gap: 2px; }
 .bp-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; margin-bottom: 8px; }
-.bp-legend-item { display: inline-flex; align-items: center; gap: 5px; }
+.bp-legend-item { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--border); background: var(--surface); border-radius: 99px; padding: 2px 9px; cursor: pointer; color: inherit; font: inherit; font-size: 12px; }
+.bp-legend-item small { color: var(--muted); }
+.bp-legend-item.mode-faded { opacity: .7; border-style: dashed; }
+.bp-legend-item.mode-off { opacity: .4; text-decoration: line-through; }
 .bp-legend-item i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
-.bp-canvas-wrap { position: relative; overflow: auto; max-height: 70vh; border-radius: 10px; }
+.bp-canvas-wrap { position: relative; overflow: hidden; border-radius: 10px; touch-action: none; }
 .bp-canvas-wrap canvas { display: block; cursor: crosshair; }
 .bp-tip { position: absolute; z-index: 5; pointer-events: none; background: var(--text); color: var(--bg); font-size: 12px; padding: 4px 8px; border-radius: 6px; white-space: nowrap; }
 .bp-detail-card { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 12px; }

@@ -1,4 +1,4 @@
-/* Blueprint tab: import in-game blueprint PNGs, show them layer by layer and analyse production. */
+/* Blueprint tab: import in-game blueprint PNGs, show them in 3D and analyse production. */
 (function () {
   'use strict';
   const A = window.AFApp;
@@ -11,11 +11,9 @@
     pipe: '#9a6bd1', rail: '#9b6b43', shop: '#c98bb9', deco: '#c9c2b4', unknown: '#888888',
   };
   const CATS = ['craft', 'heat', 'storage', 'belt', 'pipe', 'rail', 'structure', 'shop', 'deco'];
-  // facing of each rotation on screen (x right, y down); unverified convention: NoRotation faces +x
-  const ROT_DIR = { NoRotation: [1, 0], ClockWise: [0, 1], CentralSymmetry: [-1, 0], CounterClockWise: [0, -1] };
   const HEATER_IDLE = { Crucible: 0.4 };
 
-  const st = { list: [], sel: -1, layer: 0, mode: 'layer', zoom: 1, hover: null, picked: null, fert: '' };
+  const st = { list: [], sel: -1, layer: 0, picked: null, fert: '' };
   const FERTS = Object.entries(D.items).filter(([, it]) => it.nutrient > 0 && it.nutrientSpeed > 0 && !it.hidden).sort((a, b) => a[1].nutrient - b[1].nutrient).map(([id]) => id);
   const fertId = () => (FERTS.includes(st.fert) ? st.fert : (FERTS.includes(A.plan().fertilizer) ? A.plan().fertilizer : FERTS[0]));
   const bName = id => (D.buildings[id] ? pick(D.buildings[id].name) : id) || id;
@@ -40,7 +38,7 @@
         console.error(e);
       }
     }
-    if (ok) { st.sel = st.list.length - 1; st.layer = 0; st.picked = null; st.zoom = 1; }
+    if (ok) { st.sel = st.list.length - 1; st.layer = st.list[st.sel].maxZ; st.picked = null; }
     render();
   }
 
@@ -104,104 +102,237 @@
     };
   }
 
-  // ------------------------------------------------------------------ drawing
-  const icons = {};
-  function iconImg(src) {
-    if (!src) return null;
-    if (!icons[src]) { const im = new Image(); im.onload = draw; im.src = src; icons[src] = im; }
-    return icons[src].complete && icons[src].naturalWidth ? icons[src] : null;
-  }
-  function visible(bp) {
-    if (st.mode === 'top') {
-      // top view: for each cell keep the highest building
-      const top = new Map();
-      for (const b of bp.buildings) {
-        const zt = b.z + bh(b) - 1;
-        for (let x = b.x; x < b.x + b.w; x++) for (let y = b.y; y < b.y + b.d; y++) {
-          const k = x + ',' + y, cur2 = top.get(k);
-          if (!cur2 || zt > cur2.z + bh(cur2) - 1) top.set(k, b);
-        }
-      }
-      return { main: [...new Set(top.values())], ghost: [] };
+  // ------------------------------------------------------------------ 3D view (three.js, loaded on demand)
+  // Game grid -> three.js: x -> X, y -> Z, level (z) -> Y. One cell = 1 unit.
+  const ROT_YAW = { NoRotation: 0, ClockWise: -Math.PI / 2, CentralSymmetry: Math.PI, CounterClockWise: Math.PI / 2 };
+  const THIN = { belt: 0.22, pipe: 0.3, rail: 0.2 }; // drawn as slabs instead of full-height boxes
+  let T = null, Orbit = null, loading = null;
+  const v3 = { renderer: null, scene: null, camera: null, controls: null, meshes: [], key: null, hoverMesh: null, raf: 0 };
+  const texCache = {};
+  // per-category visibility: 'on' | 'faded' | 'off' (clicking the legend cycles)
+  const catMode = { structure: 'faded', shop: 'faded', deco: 'faded' };
+  const modeOf = c => catMode[c] || 'on';
+
+  function loadThree() {
+    if (!loading) {
+      loading = Promise.all([import('three'), import(new URL('vendor/three/OrbitControls.js', document.baseURI).href)])
+        .then(([three, oc]) => { T = three; Orbit = oc.OrbitControls; });
     }
-    const L = st.layer;
-    return {
-      main: bp.buildings.filter(b => b.z <= L && L <= b.z + bh(b) - 1),
-      ghost: bp.buildings.filter(b => b.z + bh(b) - 1 < L && b.z + bh(b) - 1 >= L - 3),
-    };
+    return loading;
   }
-  function cellSize(bp) {
+  function iconTexture(src) {
+    if (!texCache[src]) {
+      const tex = new T.TextureLoader().load(src, requestDraw);
+      tex.colorSpace = T.SRGBColorSpace;
+      texCache[src] = tex;
+    }
+    return texCache[src];
+  }
+  function arrowTexture() {
+    if (!texCache.__arrow) {
+      const c = document.createElement('canvas');
+      c.width = c.height = 64;
+      const g = c.getContext('2d');
+      g.fillStyle = '#ffffff';
+      g.strokeStyle = 'rgba(0,0,0,.6)';
+      g.lineWidth = 3;
+      g.beginPath();
+      g.moveTo(56, 32); g.lineTo(18, 10); g.lineTo(26, 32); g.lineTo(18, 54); g.closePath();
+      g.fill(); g.stroke();
+      const tex = new T.CanvasTexture(c);
+      tex.colorSpace = T.SRGBColorSpace;
+      texCache.__arrow = tex;
+    }
+    return texCache.__arrow;
+  }
+  const materials = {};
+  function boxMaterial(cat, faded) {
+    const k = cat + (faded ? ':f' : '');
+    if (!materials[k]) {
+      materials[k] = new T.MeshLambertMaterial({
+        color: CAT_COLORS[cat] || CAT_COLORS.unknown, transparent: faded, opacity: faded ? 0.18 : 1, depthWrite: !faded,
+      });
+    }
+    return materials[k];
+  }
+
+  function requestDraw() {
+    if (v3.raf) return;
+    v3.raf = requestAnimationFrame(() => { v3.raf = 0; if (v3.renderer) v3.renderer.render(v3.scene, v3.camera); });
+  }
+
+  function ensureRenderer(wrap) {
+    if (!v3.renderer) {
+      v3.renderer = new T.WebGLRenderer({ antialias: true });
+      v3.renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+      v3.camera = new T.PerspectiveCamera(40, 1, 0.1, 5000);
+      v3.controls = new Orbit(v3.camera, v3.renderer.domElement);
+      v3.controls.enableDamping = false;
+      v3.controls.addEventListener('change', requestDraw);
+      const el = v3.renderer.domElement;
+      el.id = 'bp-canvas';
+      el.addEventListener('pointermove', onHover);
+      el.addEventListener('pointerleave', () => setHover(null));
+      el.addEventListener('pointerdown', e => { v3.down = [e.clientX, e.clientY]; });
+      el.addEventListener('pointerup', e => {
+        if (!v3.down || Math.hypot(e.clientX - v3.down[0], e.clientY - v3.down[1]) > 4) return;
+        const hit = pickAt(e);
+        st.picked = hit ? hit.userData.i : null;
+        updateHighlight();
+        renderDetail();
+      });
+    }
+    if (v3.renderer.domElement.parentElement !== wrap) wrap.prepend(v3.renderer.domElement);
+    resize();
+  }
+  function resize() {
     const wrap = $('#bp-canvas-wrap');
-    const avail = Math.max(240, (wrap ? wrap.clientWidth : 800) - 24);
-    const base = Math.max(8, Math.min(48, Math.floor(avail / Math.max(bp.size.w, bp.size.d, 1))));
-    return Math.max(4, Math.round(base * st.zoom));
+    if (!v3.renderer || !wrap) return;
+    const w = Math.max(240, wrap.clientWidth);
+    const h = Math.round(Math.max(300, Math.min(window.innerHeight * 0.62, Math.max(w * 0.85, 380))));
+    v3.renderer.setSize(w, h);
+    v3.camera.aspect = w / h;
+    v3.camera.updateProjectionMatrix();
+    requestDraw();
   }
-  function draw() {
-    const bp = cur();
-    const cv = $('#bp-canvas');
-    if (!bp || !cv) return;
-    const cs = cellSize(bp);
-    const pad = 12;
-    const W = bp.size.w * cs + pad * 2, H = bp.size.d * cs + pad * 2;
-    const dpr = window.devicePixelRatio || 1;
-    cv.width = W * dpr; cv.height = H * dpr;
-    cv.style.width = W + 'px'; cv.style.height = H + 'px';
-    const g = cv.getContext('2d');
-    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  function buildScene(bp) {
+    const scene = new T.Scene();
     const css = getComputedStyle(document.documentElement);
-    g.fillStyle = css.getPropertyValue('--surface-2').trim() || '#eee';
-    g.fillRect(0, 0, W, H);
-    g.strokeStyle = css.getPropertyValue('--border').trim() || '#ccc';
-    g.lineWidth = 1;
-    for (let x = 0; x <= bp.size.w; x++) { g.beginPath(); g.moveTo(pad + x * cs + 0.5, pad); g.lineTo(pad + x * cs + 0.5, pad + bp.size.d * cs); g.stroke(); }
-    for (let y = 0; y <= bp.size.d; y++) { g.beginPath(); g.moveTo(pad, pad + y * cs + 0.5); g.lineTo(pad + bp.size.w * cs, pad + y * cs + 0.5); g.stroke(); }
-    const { main, ghost } = visible(bp);
-    const rect = b => [pad + b.x * cs + 1, pad + b.y * cs + 1, b.w * cs - 2, b.d * cs - 2];
-    g.globalAlpha = 0.18;
-    for (const b of ghost) { g.fillStyle = CAT_COLORS[bInfo(b.id).cat]; g.fillRect(...rect(b)); }
-    g.globalAlpha = 1;
-    const order = main.slice().sort((a, b) => (a.w * a.d) - (b.w * b.d) || a.z - b.z).reverse();
-    for (const b of order) {
+    scene.background = new T.Color(css.getPropertyValue('--surface-2').trim() || '#eeeeee');
+    scene.add(new T.HemisphereLight(0xffffff, 0x8a8478, 2.2));
+    const sun = new T.DirectionalLight(0xffffff, 1.6);
+    sun.position.set(0.6, 1.4, 0.9);
+    scene.add(sun);
+    // ground grid sized to the blueprint
+    const grid = [];
+    for (let x = 0; x <= bp.size.w; x++) grid.push(x, 0, 0, x, 0, bp.size.d);
+    for (let y = 0; y <= bp.size.d; y++) grid.push(0, 0, y, bp.size.w, 0, y);
+    const gg = new T.BufferGeometry();
+    gg.setAttribute('position', new T.Float32BufferAttribute(grid, 3));
+    scene.add(new T.LineSegments(gg, new T.LineBasicMaterial({ color: css.getPropertyValue('--border').trim() || '#bbbbbb' })));
+    const box = new T.BoxGeometry(1, 1, 1);
+    const edges = new T.EdgesGeometry(box);
+    const edgeMat = new T.LineBasicMaterial({ color: 0x3a3226, transparent: true, opacity: 0.45 });
+    const plane = new T.PlaneGeometry(1, 1);
+    v3.meshes = [];
+    for (const b of bp.buildings) {
       const info = bInfo(b.id);
-      const [x, y, w, h] = rect(b);
-      g.fillStyle = CAT_COLORS[info.cat] || CAT_COLORS.unknown;
-      g.globalAlpha = st.mode === 'layer' && b.z < st.layer ? 0.55 : 0.9;
-      g.fillRect(x, y, w, h);
-      g.globalAlpha = 1;
-      const im = iconImg(info.icon);
-      const s = Math.min(w, h) * 0.8;
-      if (im && s >= 10) g.drawImage(im, x + (w - s) / 2, y + (h - s) / 2, s, s);
-      if (info.cat === 'belt' && cs >= 8) arrow(g, x + w / 2, y + h / 2, Math.min(w, h) * 0.32, ROT_DIR[b.rot] || [1, 0]);
-      if (st.picked === b.i || (st.hover && st.hover.i === b.i)) {
-        g.strokeStyle = st.picked === b.i ? '#23786d' : '#000';
-        g.lineWidth = 2;
-        g.strokeRect(x, y, w, h);
-        g.lineWidth = 1;
+      const cat = info.cat in CAT_COLORS ? info.cat : 'unknown';
+      const thin = THIN[cat];
+      const h = thin || bh(b);
+      const group = new T.Group();
+      group.position.set(b.x + b.w / 2, b.z + h / 2, b.y + b.d / 2);
+      group.userData = { b, cat };
+      const mesh = new T.Mesh(box, boxMaterial(cat, false));
+      mesh.scale.set(b.w - 0.06, h - (thin ? 0 : 0.04), b.d - 0.06);
+      mesh.userData = { i: b.i, cat };
+      group.add(mesh);
+      const edge = new T.LineSegments(edges, edgeMat);
+      edge.scale.copy(mesh.scale);
+      group.add(edge);
+      // icon on the top face (arrows on belts)
+      const s = Math.min(b.w, b.d) * 0.82;
+      const topTex = cat === 'belt' && b.w === 1 && b.d === 1 ? arrowTexture() : info.icon ? iconTexture(info.icon) : null;
+      if (topTex) {
+        const yaw = new T.Group();
+        yaw.position.y = h / 2 + 0.01;
+        if (topTex === texCache.__arrow) yaw.rotation.y = ROT_YAW[b.rot] || 0;
+        const p = new T.Mesh(plane, new T.MeshBasicMaterial({ map: topTex, transparent: true, depthWrite: false }));
+        p.rotation.x = -Math.PI / 2;
+        p.scale.set(s, s, 1);
+        yaw.add(p);
+        group.add(yaw);
+      }
+      scene.add(group);
+      v3.meshes.push(group);
+    }
+    return scene;
+  }
+
+  function applyVisibility() {
+    const bp = cur();
+    if (!bp) return;
+    for (const g of v3.meshes) {
+      const { b, cat } = g.userData;
+      const mode = modeOf(cat);
+      g.visible = mode !== 'off' && b.z <= st.layer;
+      const mesh = g.children[0];
+      mesh.material = boxMaterial(cat, mode === 'faded');
+      g.children[1].visible = mode !== 'faded';
+      if (g.children[2]) g.children[2].visible = mode !== 'faded';
+    }
+    updateHighlight();
+  }
+  function updateHighlight() {
+    for (const g of v3.meshes) {
+      const mesh = g.children[0];
+      const on = st.picked === g.userData.b.i || v3.hoverMesh === mesh;
+      if (on) {
+        if (!mesh.userData.hl) mesh.material = mesh.material.clone();
+        mesh.userData.hl = true;
+        mesh.material.emissive = new T.Color(st.picked === g.userData.b.i ? 0x1f8a7c : 0x444444);
+      } else if (mesh.userData.hl) {
+        mesh.userData.hl = false;
+        mesh.material = boxMaterial(g.userData.cat, modeOf(g.userData.cat) === 'faded');
       }
     }
+    requestDraw();
   }
-  function arrow(g, cx, cy, r, [dx, dy]) {
-    g.fillStyle = 'rgba(255,255,255,.95)';
-    g.strokeStyle = 'rgba(0,0,0,.55)';
-    g.beginPath();
-    g.moveTo(cx + dx * r, cy + dy * r);
-    g.lineTo(cx - dx * r * 0.6 - dy * r * 0.7, cy - dy * r * 0.6 + dx * r * 0.7);
-    g.lineTo(cx - dx * r * 0.6 + dy * r * 0.7, cy - dy * r * 0.6 - dx * r * 0.7);
-    g.closePath();
-    g.fill();
-    g.stroke();
+  function resetCamera(bp) {
+    const cx = bp.size.w / 2, cz = bp.size.d / 2, H = bp.maxZ + 1;
+    const r = Math.max(bp.size.w, bp.size.d, H) * 1.35 + 4;
+    v3.controls.target.set(cx, H * 0.3, cz);
+    v3.camera.position.set(cx + r * 0.75, H * 0.3 + r * 0.85, cz + r * 1.0);
+    v3.controls.update();
+    requestDraw();
   }
-  function hitTest(ev) {
+  const raycaster = () => (v3.ray = v3.ray || new T.Raycaster());
+  function pickAt(e) {
+    const r = v3.renderer.domElement.getBoundingClientRect();
+    const ndc = new T.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+    const ray = raycaster();
+    ray.setFromCamera(ndc, v3.camera);
+    const targets = v3.meshes.filter(g => g.visible && modeOf(g.userData.cat) !== 'faded').map(g => g.children[0]);
+    const hits = ray.intersectObjects(targets, false);
+    return hits.length ? hits[0].object : null;
+  }
+  function setHover(mesh, e) {
+    const tip = $('#bp-tip');
+    if (mesh !== v3.hoverMesh) { v3.hoverMesh = mesh; updateHighlight(); }
+    if (!tip) return;
+    if (!mesh) { tip.hidden = true; return; }
+    const b = cur().buildings[mesh.userData.i];
+    const wrap = $('#bp-canvas-wrap').getBoundingClientRect();
+    tip.hidden = false;
+    tip.innerHTML = `<b>${esc(bName(b.id))}</b>${b.recipe || b.seed || b.cauldron.length ? `<br>${esc(b.cauldron.length ? b.cauldron.map(nm).join(' + ') : nm(b.recipe || b.seed))}` : ''}`;
+    tip.style.left = (e.clientX - wrap.left + 14) + 'px';
+    tip.style.top = (e.clientY - wrap.top + 14) + 'px';
+  }
+  function onHover(e) {
+    if (e.buttons) return; // dragging the camera
+    setHover(pickAt(e), e);
+  }
+
+  async function draw3d() {
     const bp = cur();
-    const cv = $('#bp-canvas');
-    if (!bp || !cv) return null;
-    const r = cv.getBoundingClientRect();
-    const cs = cellSize(bp);
-    const cx = Math.floor((ev.clientX - r.left - 12) / cs), cy = Math.floor((ev.clientY - r.top - 12) / cs);
-    const { main } = visible(bp);
-    const hits = main.filter(b => cx >= b.x && cx < b.x + b.w && cy >= b.y && cy < b.y + b.d);
-    hits.sort((a, b) => (a.w * a.d) - (b.w * b.d) || (b.z + bh(b)) - (a.z + bh(a)));
-    return hits[0] || null;
+    const wrap = $('#bp-canvas-wrap');
+    if (!bp || !wrap) return;
+    try { await loadThree(); } catch (err) {
+      wrap.innerHTML = `<p class="alert">${esc(t('bp3dError'))}</p>`;
+      console.error(err);
+      return;
+    }
+    ensureRenderer(wrap);
+    const key = st.sel + ':' + bp.file;
+    if (v3.key !== key) {
+      v3.scene = buildScene(bp);
+      v3.key = key;
+      v3.hoverMesh = null;
+      resetCamera(bp);
+    }
+    applyVisibility();
+    resize();
   }
 
   // ------------------------------------------------------------------ render
@@ -220,7 +351,7 @@
     const an = analyse(bp);
     st.layer = Math.min(st.layer, bp.maxZ);
     const catLegend = CATS.filter(c => an.cats[c]).map(c =>
-      `<span class="bp-legend-item"><i style="background:${CAT_COLORS[c]}"></i>${esc(t('bpCat_' + c))} <b>${an.cats[c]}</b></span>`).join('');
+      `<button class="bp-legend-item mode-${modeOf(c)}" data-bp-cat="${c}" title="${esc(t('bpCatToggle'))}"><i style="background:${CAT_COLORS[c]}"></i>${esc(t('bpCat_' + c))} <b>${an.cats[c]}</b><small>${esc(t('bpCatMode_' + modeOf(c)))}</small></button>`).join('');
     const totalsPos = Object.entries(an.totals).filter(([, v]) => v > 1e-9).sort((a, b) => b[1] - a[1]);
     const totalsNeg = Object.entries(an.totals).filter(([, v]) => v < -1e-9).sort((a, b) => a[1] - b[1]);
     const chips = list => list.map(([id, v]) => `<span class="chip">${itemIco(id)}<b>${fmt(Math.abs(v))}</b><span class="muted">${esc(nm(id))}</span></span>`).join('');
@@ -234,17 +365,16 @@
       <div class="card bp-viewer">
         <div class="section-head">
           <h2>${esc(bp.title || bp.file)}</h2>
-          <div class="seg"><button data-bp-mode="layer" aria-pressed="${st.mode === 'layer'}">${esc(t('bpModeLayer'))}</button><button data-bp-mode="top" aria-pressed="${st.mode === 'top'}">${esc(t('bpModeTop'))}</button></div>
+          <button class="btn-ghost small" data-bp-reset="1">${esc(t('bpResetView'))}</button>
         </div>
         <div class="bp-controls">
-          <label class="bp-layer ${st.mode === 'top' ? 'disabled' : ''}">${esc(t('bpLayer'))}
-            <input type="range" id="bp-layer" min="0" max="${bp.maxZ}" value="${st.layer}" ${st.mode === 'top' ? 'disabled' : ''}>
+          <label class="bp-layer">${esc(t('bpHeightLimit'))}
+            <input type="range" id="bp-layer" min="0" max="${bp.maxZ}" value="${st.layer}">
             <b id="bp-layer-val">${st.layer}</b> / ${bp.maxZ}</label>
-          <span class="bp-zoom"><button class="btn-ghost" data-bp-zoom="-1" aria-label="zoom out">−</button><button class="btn-ghost" data-bp-zoom="0">${esc(t('bpFit'))}</button><button class="btn-ghost" data-bp-zoom="1" aria-label="zoom in">＋</button></span>
         </div>
         <div class="bp-legend">${catLegend}</div>
-        <div class="bp-canvas-wrap" id="bp-canvas-wrap"><canvas id="bp-canvas"></canvas><div id="bp-tip" class="bp-tip" hidden></div></div>
-        <p class="hint small">${esc(t('bpDirNote'))}</p>
+        <div class="bp-canvas-wrap" id="bp-canvas-wrap"><div id="bp-tip" class="bp-tip" hidden></div></div>
+        <p class="hint small">${esc(t('bpViewHint'))}</p>
         <div id="bp-detail"></div>
       </div>
       <div class="card">
@@ -264,7 +394,8 @@
         ${totalsPos.length ? `<h3>${esc(t('bpNetOut'))}</h3><div class="inputs">${chips(totalsPos)}</div>` : ''}
         ${totalsNeg.length ? `<h3>${esc(t('bpNetIn'))}</h3><div class="inputs">${chips(totalsNeg)}</div>` : ''}
       </div>`;
-    draw();
+    if (v3.renderer) v3.renderer.domElement.remove();
+    draw3d();
     renderDetail();
   }
   function settingLabel(b) {
@@ -299,40 +430,24 @@
     const b = e.target.closest('button');
     if (!b) return;
     const d = b.dataset;
-    if (d.bpSel !== undefined) { st.sel = +d.bpSel; st.layer = 0; st.picked = null; st.zoom = 1; render(); return; }
-    if (d.bpMode) { st.mode = d.bpMode; render(); return; }
-    if (d.bpZoom !== undefined) {
-      st.zoom = d.bpZoom === '0' ? 1 : Math.max(0.25, Math.min(6, st.zoom * (d.bpZoom === '1' ? 1.4 : 1 / 1.4)));
-      draw();
+    if (d.bpSel !== undefined) { st.sel = +d.bpSel; st.layer = cur().maxZ; st.picked = null; render(); return; }
+    if (d.bpCat) {
+      const order = ['on', 'faded', 'off'];
+      catMode[d.bpCat] = order[(order.indexOf(modeOf(d.bpCat)) + 1) % 3];
+      b.className = `bp-legend-item mode-${modeOf(d.bpCat)}`;
+      b.querySelector('small').textContent = t('bpCatMode_' + modeOf(d.bpCat));
+      applyVisibility();
       return;
     }
+    if (d.bpReset && cur() && v3.controls) { resetCamera(cur()); return; }
     if (b.id === 'bp-pick') $('#bp-file').click();
   });
   document.addEventListener('input', e => {
-    if (e.target.id === 'bp-layer') { st.layer = +e.target.value; $('#bp-layer-val').textContent = st.layer; draw(); }
+    if (e.target.id === 'bp-layer') { st.layer = +e.target.value; $('#bp-layer-val').textContent = st.layer; applyVisibility(); }
   });
   document.addEventListener('change', e => {
     if (e.target.id === 'bp-fert') { st.fert = e.target.value; render(); return; }
     if (e.target.id === 'bp-file') { importFiles([...e.target.files]); e.target.value = ''; }
-  });
-  document.addEventListener('mousemove', e => {
-    if (e.target.id !== 'bp-canvas') { if (st.hover) { st.hover = null; const tip = $('#bp-tip'); if (tip) tip.hidden = true; draw(); } return; }
-    const h = hitTest(e);
-    const tip = $('#bp-tip');
-    if ((h && h.i) !== (st.hover && st.hover.i)) { st.hover = h; draw(); }
-    if (!h) { tip.hidden = true; return; }
-    const wrap = $('#bp-canvas-wrap').getBoundingClientRect();
-    tip.hidden = false;
-    tip.innerHTML = `<b>${esc(bName(h.id))}</b>${h.recipe || h.seed || h.cauldron.length ? `<br>${esc(nm(h.recipe || h.seed || h.cauldron.join(' + ')))}` : ''}`;
-    tip.style.left = (e.clientX - wrap.left + 14) + 'px';
-    tip.style.top = (e.clientY - wrap.top + 14) + 'px';
-  });
-  document.addEventListener('mousedown', e => {
-    if (e.target.id !== 'bp-canvas') return;
-    const h = hitTest(e);
-    st.picked = h ? h.i : null;
-    draw();
-    renderDetail();
   });
   const dropTarget = () => $('#tab-blueprint');
   document.addEventListener('dragover', e => { if (dropTarget() && !dropTarget().hidden) { e.preventDefault(); $('#bp-drop').classList.add('over'); } });
@@ -344,7 +459,7 @@
     const files = [...e.dataTransfer.files].filter(f => /\.png$/i.test(f.name));
     if (files.length) importFiles(files);
   });
-  window.addEventListener('resize', () => draw());
+  window.addEventListener('resize', () => resize());
 
   window.AFBlueprintView = { render };
 })();
