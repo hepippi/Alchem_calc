@@ -201,6 +201,55 @@ for bid, b in table('DT_Buildings').items():
         'order': b['ID'],
     }
 
+
+# every placeable building (incl. mirrored/hidden variants used by blueprints): footprint and category
+def building_category(b):
+    tags = set(b['BuildingTags'])
+    ft = enum_val(b['FurnitureType'])
+    if 'Building.Crafting.Heating' in tags:
+        return 'heat'
+    if any(t.startswith('Building.Crafting.') for t in tags):
+        return 'craft'
+    if 'Building.Logistics.Storage' in tags or 'Building.Lab.Storage' in tags:
+        return 'storage'
+    if ft == 'Pipeline':
+        return 'pipe'
+    if ft == 'Railroad' or 'Building.Logistics.Track' in tags:
+        return 'rail'
+    if ft == 'Logistics' or 'Building.Logistics.Logistics' in tags or 'Building.Logistics.CargoLift' in tags:
+        return 'belt'
+    if 'Building.Logistics.Structure' in tags or ft in ('Construct', 'ConstructV2') or 'Building.Decoration.Blocks' in tags \
+            or any(t.startswith('Building.Building.') for t in tags):
+        return 'structure'
+    if 'Building.Shop.Shelves' in tags or 'Building.Shop.Furniture' in tags:
+        return 'shop'
+    return 'deco'
+
+
+buildings = {}
+for bid, b in table('DT_Buildings').items():
+    cells = set()
+    for g in b['GridConfigList']:
+        p = g['Position']
+        cells.add((p['X'], p['Y'], p['Z']))
+    for v in b['VolumeList']:
+        for x in range(v['Min']['X'], v['Max']['X'] + 1):
+            for y in range(v['Min']['Y'], v['Max']['Y'] + 1):
+                for z in range(v['Min']['Z'], v['Max']['Z'] + 1):
+                    cells.add((x, y, z))
+    if not cells:
+        cells = {(0, 0, 0)}
+    m = re.search(r"'(BP_[^']+)_C'", (b.get('ScriptClass') or {}).get('ObjectName', ''))
+    info = bp_info.get(m.group(1), {}) if m else {}
+    entry = {
+        'name': text(b['DisplayName']), 'icon': icon(b['DisplayIcon']), 'cat': building_category(b),
+        'z0': min(c[2] for c in cells), 'h': max(c[2] for c in cells) - min(c[2] for c in cells) + 1,
+        'heat': b['HeatCost'],
+    }
+    if 'type' in info:
+        entry['craft'] = {'types': [info['type']] + EXTRA_TYPES.get(bid, []), 'speed': info.get('speed', 1.0)}
+    buildings[bid] = entry
+
 craft_types = {}
 for r in recipes:
     craft_types.setdefault(r['type'], {'name': loc_key('ST_Localization', f"CraftType_Name_{r['type']}")})
@@ -229,6 +278,7 @@ version = open(os.path.join(WORK, 'version.txt'), encoding='utf-8').read().strip
 data = {
     'version': version, 'langs': LANGS, 'items': items, 'recipes': recipes, 'machines': machines,
     'craftTypes': craft_types, 'plants': plants, 'growth': growth, 'research': research, 'tags': tag_names,
+    'buildings': buildings,
 }
 os.makedirs(os.path.join(SITE, 'data'), exist_ok=True)
 with open(os.path.join(SITE, 'data', 'gamedata.js'), 'w', encoding='utf-8') as f:

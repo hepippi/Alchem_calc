@@ -1,0 +1,3 @@
+ooz-wasm 2.0.0 (https://github.com/SnosMe/ooz-wasm), GPL-3.0-or-later.
+WebAssembly build of ooz (https://github.com/powzix/ooz), an open-source Kraken decompressor.
+Vendored unmodified from the npm package.

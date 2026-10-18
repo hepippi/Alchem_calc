@@ -927,10 +927,12 @@
     $('#tab-planner').hidden = ui.tab !== 'planner';
     $('#tab-browser').hidden = ui.tab !== 'browser';
     $('#tab-cauldron').hidden = ui.tab !== 'cauldron';
+    $('#tab-blueprint').hidden = ui.tab !== 'blueprint';
+    if (ui.tab === 'blueprint' && window.AFBlueprintView) window.AFBlueprintView.render();
   }
   function renderPlanner() { renderTargets(); renderResearch(); renderSelects(); renderPlans(); renderResults(); }
   function renderBrowser() { renderBrowserTags(); renderBrowserGrid(); renderBrowserDetail(); }
-  function renderAll() { applyTexts(); renderTabs(); renderPlanner(); renderBrowser(); renderCauldron(); }
+  function renderAll() { applyTexts(); renderTabs(); renderPlanner(); renderBrowser(); renderCauldron(); if (window.AFBlueprintView) window.AFBlueprintView.render(); }
   function update() { persist(); renderTargets(); renderResearch(); renderSelects(); renderResults(); if (ui.tab === 'browser') renderBrowserDetail(); if (ui.tab === 'cauldron') { renderCdResult(); renderCdTable(); } }
 
   // ------------------------------------------------------------------ events
@@ -1103,6 +1105,9 @@
       if (items[pickerActive]) items[pickerActive].scrollIntoView({ block: 'nearest' });
     }
   });
+
+  // shared helpers for the blueprint tab (bpview.js)
+  window.AFApp = { D, C, IDX, t, nm, mn, pick, fmt, esc, ico, itemIco, toast, plan: () => plan };
 
   renderAll();
   persist();

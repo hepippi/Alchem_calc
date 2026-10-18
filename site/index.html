@@ -24,6 +24,7 @@
       <button role="tab" data-tab="planner" class="tab-btn" data-t="tabPlanner">生産プランナー</button>
       <button role="tab" data-tab="cauldron" class="tab-btn" data-t="tabCauldron">大釜計算</button>
       <button role="tab" data-tab="browser" class="tab-btn" data-t="tabBrowser">アイテム図鑑</button>
+      <button role="tab" data-tab="blueprint" class="tab-btn" data-t="tabBlueprint">設計図</button>
     </nav>
     <div class="top-actions">
       <label class="sr-only" for="lang-select" data-t="lang">言語</label>
@@ -177,6 +178,28 @@
       </details>
     </section>
 
+    <section id="tab-blueprint" class="tab-panel blueprint" hidden>
+      <div class="bp-layout">
+        <aside class="bp-side">
+          <div class="card">
+            <h2 data-t="bpImport">設計図を読み込む</h2>
+            <div id="bp-drop" class="bp-drop">
+              <p data-t="bpDropHint">ゲームの設計図（PNG）をここにドラッグ</p>
+              <button class="btn" id="bp-pick" data-t="bpPick">ファイルを選ぶ</button>
+              <input type="file" id="bp-file" accept=".png,image/png" multiple hidden>
+            </div>
+            <p class="hint small"><span data-t="bpWhere">設計図の保存場所</span>:<br><code>%LOCALAPPDATA%\AlchemyFactory\Saved\Blueprints</code></p>
+            <p class="hint small" data-t="bpPrivacy"></p>
+          </div>
+          <div class="card">
+            <h2 data-t="bpLoaded">読み込んだ設計図</h2>
+            <div id="bp-list" class="bp-list"></div>
+          </div>
+        </aside>
+        <div id="bp-main" class="bp-main"></div>
+      </div>
+    </section>
+
     <section id="tab-browser" class="tab-panel browser" hidden>
       <div class="browser-bar">
         <input id="db-search" type="search" data-tp="searchItems" placeholder="アイテムを検索…">
@@ -199,7 +222,8 @@
         <li data-t="nurseryNote"></li>
       </ul>
     </details>
-    <p>Alchemy Factory © D5 Copperhead. Fan-made tool; game data and icons belong to their owners.</p>
+    <p>Alchemy Factory © D5 Copperhead. Fan-made tool; game data and icons belong to their owners.
+      Source: <a href="https://github.com/hepippi/Alchem_calc">GitHub</a> (GPL-3.0). Blueprint decoding uses <a href="https://github.com/SnosMe/ooz-wasm">ooz-wasm</a> (GPL-3.0).</p>
   </footer>
 
   <div id="picker" class="picker" hidden>
@@ -214,5 +238,7 @@
   <script src="i18n.js"></script>
   <script src="calc.js"></script>
   <script src="app.js"></script>
+  <script src="blueprint.js"></script>
+  <script src="bpview.js"></script>
 </body>
 </html>

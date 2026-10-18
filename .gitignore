@@ -4,3 +4,4 @@ extractor/obj/
 __pycache__/
 *.pyc
 .claude/
+site/_bptest/
